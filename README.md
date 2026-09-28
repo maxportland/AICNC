@@ -109,7 +109,7 @@ number pad, nothing relies on hover, and scrolling is by drag. Fonts (Inter, Jet
 - **Program**: a touch file browser (Programs, Made by Milo, USB), the G-code with the current line, run from
   a selected line, optional stop, and the Facing / Hole-circle generators.
 - **Tools**: the tool in the spindle, change tool (M6), set tool (M61), measure length on the tool setter,
-  apply G43, the power drawbar, and the tool table.
+  apply G43, the power drawbar, the tool table, and the Fusion 360 **Tool library** (below).
 - **Offsets**: the active work system (G54-G59), the offset table, and saved fixtures (`fixtures.json`).
 - **Probe**: qtvcp's probing routines, plus the tool setter and touch plate with their parameters.
 - **Activity**: every log (machine, screen, Milo, LinuxCNC) live, filterable and searchable.
@@ -118,6 +118,29 @@ number pad, nothing relies on hover, and scrolling is by drag. Fonts (Inter, Jet
 
 Tap an axis in the position readout to zero it, set it to a value (the number pad accepts `45/2`), halve it
 to find a center, home it, or move to it.
+
+### Fusion 360 tool libraries
+
+**Tools → Tool library** reads vendor tool libraries exported from Fusion 360 (`.json`, or `.tools`,
+which is the same JSON zipped). **Import…** finds them on the Desktop, in Downloads and on USB sticks and
+keeps a copy in `~/linuxcnc/tool_libraries/`. Search by diameter, product number or description and filter
+by type.
+
+Each tool shows its geometry and the vendor's cutting presets per material. Vendor presets usually assume
+router speeds (18,000 rpm and up); **"This machine"** shows them at this spindle's limit with the vendor's
+chip load per tooth kept, so the feed is recomputed rather than copied (copying would feed several times
+too fast).
+
+**Add to machine…** writes the tool into `tool.tbl` under the number you choose (an existing entry keeps its
+measured length) and links it to the catalog tool in `tool_links.json`. Measure its length on the tool setter
+before cutting. For linked tools, Milo:
+
+- plans programs with the rescaled cutting data for the material you name,
+- knows the flute count, flute length, corner radius and point angle,
+- rejects operations that cut deeper than the tool's flute length,
+- answers questions about the tool in the spindle with its real description.
+
+`tool.tbl` stays the record of what's in the rack; the libraries are catalogs.
 
 ### How Milo is everywhere
 
@@ -285,15 +308,15 @@ submodule in `libs/cam_ir`. PyQt5 and the LinuxCNC modules come from the system.
 
 ### Installation Steps
 
-1. **Clone or copy this configuration**:
+1. **Clone this configuration** (with the CAM IR submodule):
    ```bash
    cd ~/linuxcnc/configs
-   # Copy Mesa7I96S directory here
+   git clone --recurse-submodules git@github.com:maxportland/AICNC.git
    ```
 
 2. **Set up Python virtual environment** (if not already done):
    ```bash
-   cd Mesa7I96S
+   cd AICNC
    python3 -m venv --system-site-packages venv
    ```
    `--system-site-packages` is required: the AI Assistant runs inside qtvcp and needs the
@@ -307,7 +330,7 @@ submodule in `libs/cam_ir`. PyQt5 and the LinuxCNC modules come from the system.
    Don't `pip install PyQt5`; a second copy would shadow the system PyQt5 that qtvcp uses.
    To pull a newer CAM IR later, run `./update_cam_ir.sh`.
 
-5. **Configure motion controller IP**:
+4. **Configure motion controller IP**:
    - Edit `Mesa7I96S.ini`:
    ```ini
    [HOSTMOT2]
@@ -315,11 +338,11 @@ submodule in `libs/cam_ir`. PyQt5 and the LinuxCNC modules come from the system.
    ```
    - Default is `10.10.10.10`
 
-6. **Set up OpenAI API key** (for AI Assistant):
+5. **Set up OpenAI API key** (for AI Assistant):
    - Launch LinuxCNC
    - Open **Settings**, enter your API key and tap Save
 
-7. **Configure wake word** (optional):
+6. **Configure wake word** (optional):
    - See `WAKE_WORD_SETUP.md` for instructions
 
 ## Configuration
@@ -387,7 +410,7 @@ STEPGEN_MAXACCEL = 250.00
 ### Starting LinuxCNC
 
 ```bash
-cd ~/linuxcnc/configs/Mesa7I96S
+cd ~/linuxcnc/configs/AICNC
 linuxcnc Mesa7I96S.ini
 ```
 
@@ -438,7 +461,7 @@ The XHC-WHB04B-6 wireless pendant provides:
 
 **Problem**: Cannot connect to motion controller
 - **Solution**: Check network connection and IP address (default: 10.10.10.10)
-- Verify `Mesa7I96S.hal` has correct IP address
+- Verify `[HOSTMOT2] BOARD_IP` in `Mesa7I96S.ini` (the HAL file reads it from there)
 - Check Ethernet cable connection
 
 **Problem**: Axes not moving
@@ -446,7 +469,7 @@ The XHC-WHB04B-6 wireless pendant provides:
   - Check enable signals in HAL
   - Verify step/direction connections
   - Check PID tuning parameters
-  - Verify limit switches aren't triggered
+  - Check the joint isn't at a soft limit (there are no limit switches)
 
 ### AI Assistant Issues
 
@@ -487,7 +510,7 @@ The XHC-WHB04B-6 wireless pendant provides:
 
 **Problem**: UI is slow or unresponsive
 - **Solution**:
-  - Reduce CYCLE_TIME in `Mesa7I96S.ini`
+  - Increase `[DISPLAY] CYCLE_TIME` in `Mesa7I96S.ini` (default 100 ms) so the screen polls less often
   - Check system resources (CPU, memory)
   - Reduce log verbosity
 
@@ -524,7 +547,7 @@ AICNC/
 │   ├── shell.py            # Rail, status bar, dock, overlays, Milo bridge
 │   ├── probing.py          # Tool setter and touch plate routines
 │   ├── assistant/          # Orb, conversation, composer, confirmation sheet
-│   ├── pages/              # One file per page
+│   ├── pages/              # One file per page (tool_library.py: Fusion 360 libraries)
 │   ├── fonts/              # Inter and JetBrains Mono (OFL)
 │   └── preview.py          # Run the screen against a simulated machine
 ├── milo_engine.py          # Milo's logic, no UI: routing, confirmation, CAM, voice, wake word
@@ -539,6 +562,7 @@ AICNC/
 ├── log_viewer.py, log_sources.py   # Activity page
 ├── custom_action.py, subprograms.py   # Tool setter routine
 ├── facing_utility.py       # Facing generator with step-down passes
+├── fusion_tools.py         # Fusion 360 tool libraries: reading, feed rescaling, tool.tbl links
 ├── requirements.txt        # Pinned Python packages for the venv
 ├── libs/cam_ir/            # CAM IR library (git submodule)
 ├── tests/                  # venv/bin/python -m pytest tests
@@ -585,6 +609,6 @@ For general LinuxCNC support:
 
 ---
 
-**Last Updated**: 2025-03-11  
+**Last Updated**: 2026-09-29  
 **LinuxCNC Version**: Master (2.9)  
 **Configuration Version**: 1.5
