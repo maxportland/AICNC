@@ -1,0 +1,6 @@
+;!/usr/bin/env linuxcnc
+; This must be a valid G-code file
+G91
+G1 X10 F100
+G90
+M2

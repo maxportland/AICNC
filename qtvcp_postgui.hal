@@ -1,0 +1,7 @@
+#  ---manual tool change signals to qtdragon's dialog---
+
+net tool-change-request    => hal_manualtoolchange.change
+net tool-change-confirmed  <= hal_manualtoolchange.changed
+net tool-number            => hal_manualtoolchange.number
+
+net probe-in => milo.led-probe

@@ -1,0 +1,895 @@
+"""
+The machine, as the UI sees it.
+
+MachineModel holds a snapshot of the machine state (plain attributes) and emits
+`changed(topic)` when a group of fields changes, plus `position_changed` for the
+high-rate DRO updates. Commands are methods on the model. Pages never touch
+qtvcp's STATUS / ACTION directly, which keeps them testable and lets the whole
+screen run against SimMachine for previews.
+
+Topics: state, homing, position, spindle, overrides, tool, program, offsets, jog, coolant, drawbar
+"""
+
+import os
+import re
+import time
+from typing import Dict, List, Optional, Tuple
+
+from PyQt5 import QtCore
+
+try:
+    import linuxcnc
+except ImportError:  # previews on a machine without LinuxCNC
+    linuxcnc = None
+
+AXES = ("X", "Y", "Z")
+WCS_NAMES = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"]
+
+# Machine state labels shown in the top bar (and their tone for color)
+STATE_TONES = {
+    "E-STOP": "red", "OFF": "muted", "NOT HOMED": "amber", "HOMING": "accent",
+    "READY": "green", "RUNNING": "green", "PAUSED": "amber", "MDI": "accent", "BUSY": "accent",
+}
+
+_INCREMENT_RE = re.compile(r'^\s*([0-9]*\.?[0-9]+)\s*(mm|cm|um|in|inch|mil)?\s*$', re.I)
+
+
+def parse_increment(text: str, machine_metric: bool = True) -> Optional[float]:
+    """'.5mm' -> 0.5 (in machine units); 'Continuous' -> 0; None if unreadable"""
+    if text.strip().lower().startswith("cont"):
+        return 0.0
+    match = _INCREMENT_RE.match(text)
+    if not match:
+        return None
+    value = float(match.group(1))
+    unit = (match.group(2) or ("mm" if machine_metric else "in")).lower()
+    mm = {"mm": value, "cm": value * 10, "um": value / 1000, "in": value * 25.4,
+          "inch": value * 25.4, "mil": value * 0.0254}[unit]
+    return mm if machine_metric else mm / 25.4
+
+
+def format_increment(value: float, units: str) -> str:
+    if value == 0:
+        return "Cont"
+    return f"{value:g}"
+
+
+class MachineModel(QtCore.QObject):
+    """Machine snapshot + commands. Subclasses fill in the state and implement the commands."""
+
+    changed = QtCore.pyqtSignal(str)
+    position_changed = QtCore.pyqtSignal()
+    message = QtCore.pyqtSignal(str, str)  # level (error/warning/info), text
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.axes: Tuple[str, ...] = AXES
+        self.estop = True
+        self.on = False
+        self.mode = "manual"  # manual | mdi | auto
+        self.interp = "idle"  # idle | running | paused | reading | waiting
+        self.paused = False
+        self.homed: Dict[str, bool] = {a: False for a in self.axes}
+        self.homing = False
+        self.metric = True  # display units (G21)
+        self.machine_metric = True
+        self.limits: Dict[str, Tuple[float, float]] = {a: (0.0, 0.0) for a in self.axes}
+
+        self.pos_abs: List[float] = [0.0] * len(self.axes)
+        self.pos_rel: List[float] = [0.0] * len(self.axes)
+        self.pos_dtg: List[float] = [0.0] * len(self.axes)
+        self.feed_rate = 0.0  # current velocity, units/min
+
+        self.spindle_requested = 0.0
+        self.spindle_actual = 0.0
+        self.spindle_dir = 0  # -1, 0, 1
+        self.spindle_min = 100.0
+        self.spindle_max = 3000.0
+        self.spindle_default = 1000.0
+        self.spindle_step = 200.0
+
+        self.feed_override = 100.0
+        self.rapid_override = 100.0
+        self.spindle_override = 100.0
+        self.max_feed_override = 200.0
+        self.min_spindle_override = 50.0
+        self.max_spindle_override = 100.0
+        self.max_velocity = 5000.0  # units/min, machine maximum
+        self.velocity_limit = 5000.0  # units/min, current max-velocity setting
+
+        self.tool = 0
+        self.tool_comment = ""
+        self.tool_diameter = 0.0
+        self.tool_length = 0.0
+
+        self.wcs = "G54"
+        self.wcs_offsets: Dict[str, List[float]] = {}
+
+        self.file = ""
+        self.line = 0
+        self.total_lines = 0
+        self.run_started: Optional[float] = None
+        self.run_elapsed = 0.0
+        self.gcode_properties: Dict[str, str] = {}
+
+        self.jog_rate = 1000.0  # units/min
+        self.jog_rate_max = 3000.0
+        self.jog_rate_min = 30.0
+        self.increments: List[Tuple[str, float]] = [("Cont", 0.0), ("1", 1.0), ("0.1", 0.1), ("0.01", 0.01)]
+        self.jog_increment = 0.0
+
+        self.flood = False
+        self.mist = False
+        self.drawbar = False
+        self.probe_tripped = False
+
+        self.mdi_commands: List[Tuple[str, str]] = []  # (label, code) from the INI
+        self.program_prefix = os.path.expanduser("~/linuxcnc/nc_files")
+
+    # --- derived -------------------------------------------------------------------------
+
+    @property
+    def units(self) -> str:
+        return "mm" if self.metric else "in"
+
+    @property
+    def machine_units(self) -> str:
+        """Units of jog increments and jog speed (always machine units, whatever G20/G21 says)"""
+        return "mm" if self.machine_metric else "in"
+
+    @property
+    def all_homed(self) -> bool:
+        return all(self.homed.get(a, False) for a in self.axes)
+
+    @property
+    def is_running(self) -> bool:
+        return self.mode == "auto" and self.interp != "idle"
+
+    @property
+    def ready(self) -> bool:
+        """On, idle and homed: safe to accept motion commands"""
+        return not self.estop and self.on and self.interp == "idle" and self.all_homed
+
+    @property
+    def state_label(self) -> str:
+        if self.estop:
+            return "E-STOP"
+        if not self.on:
+            return "OFF"
+        if self.homing:
+            return "HOMING"
+        if self.mode == "auto" and self.interp != "idle":
+            return "PAUSED" if self.paused else "RUNNING"
+        if self.interp != "idle":
+            return "BUSY"
+        if not self.all_homed:
+            return "NOT HOMED"
+        return "READY"
+
+    @property
+    def state_detail(self) -> str:
+        label = self.state_label
+        if label == "E-STOP":
+            return "Release E-stop to continue"
+        if label == "OFF":
+            return "Machine power is off"
+        if label == "NOT HOMED":
+            missing = [a for a in self.axes if not self.homed.get(a)]
+            return "Home " + "".join(missing) + " before moving"
+        if label in ("RUNNING", "PAUSED"):
+            if self.total_lines:
+                return f"Line {self.line} of {self.total_lines}"
+            return os.path.basename(self.file)
+        return {"manual": "Manual", "mdi": "MDI", "auto": "Auto"}.get(self.mode, "")
+
+    @property
+    def progress(self) -> float:
+        """0..1 through the loaded program"""
+        if not self.total_lines:
+            return 0.0
+        return max(0.0, min(1.0, self.line / float(self.total_lines)))
+
+    def axis_index(self, axis: str) -> int:
+        return self.axes.index(axis)
+
+    # --- commands (overridden) ---------------------------------------------------------
+
+    def set_estop(self, tripped: bool): raise NotImplementedError
+    def set_power(self, on: bool): raise NotImplementedError
+    def home_all(self): raise NotImplementedError
+    def home_axis(self, axis: str): raise NotImplementedError
+    def unhome_all(self): raise NotImplementedError
+    def jog_start(self, axis: str, direction: int): raise NotImplementedError
+    def jog_stop(self, axis: str): raise NotImplementedError
+    def set_jog_rate(self, rate: float): raise NotImplementedError
+    def set_jog_increment(self, value: float, text: str): raise NotImplementedError
+    def set_axis_origin(self, axis: str, value: float): raise NotImplementedError
+    def mdi(self, command: str) -> bool: raise NotImplementedError
+    def run(self, line: int = 0): raise NotImplementedError
+    def pause_resume(self): raise NotImplementedError
+    def step(self): raise NotImplementedError
+    def abort(self): raise NotImplementedError
+    def spindle_start(self, direction: int, rpm: float): raise NotImplementedError
+    def spindle_stop(self): raise NotImplementedError
+    def set_feed_override(self, pct: float): raise NotImplementedError
+    def set_rapid_override(self, pct: float): raise NotImplementedError
+    def set_spindle_override(self, pct: float): raise NotImplementedError
+    def set_velocity_limit(self, units_per_min: float): raise NotImplementedError
+    def toggle_flood(self): raise NotImplementedError
+    def toggle_mist(self): raise NotImplementedError
+    def toggle_drawbar(self): raise NotImplementedError
+    def open_program(self, path: str): raise NotImplementedError
+    def set_wcs(self, name: str): raise NotImplementedError
+    def reload_tool_table(self): raise NotImplementedError
+
+    # Composite commands shared by both implementations
+
+    def reload_program(self):
+        if self.file:
+            self.open_program(self.file)
+
+    def set_tool(self, number: int):
+        """Tell LinuxCNC which tool is in the spindle, without a tool change (M61), and apply its length"""
+        return self.mdi(f"M61 Q{int(number)} G43")
+
+    def change_tool(self, number: int):
+        """Full tool change (prompts through the manual tool change dialog), then apply its length"""
+        return self.mdi(f"T{int(number)} M6 G43")
+
+    def mdi_lines(self, lines):
+        """Several MDI lines as one command: checked once, then queued in order (LinuxCNC
+        queues MDI commands, so they run one after the other)"""
+        lines = [line.strip() for line in lines if line.strip()]
+        if not lines or not self.mdi(lines[0]):
+            return False
+        for line in lines[1:]:
+            self._queue_mdi(line)
+        return True
+
+    def _queue_mdi(self, line):
+        raise NotImplementedError
+
+    def go_to_work_zero(self):
+        """Lift to machine Z0 first, then rapid to the work X0 Y0"""
+        return self.mdi_lines(["G90 G53 G0 Z0", "G90 G0 X0 Y0"])
+
+    def stat(self):
+        """A linuxcnc.stat-like object for the AI safety checks"""
+        return None
+
+    def action_api(self):
+        """What Milo's confirmed actions call: CALL_MDI, SET_MACHINE_HOMING, SET_MACHINE_STATE, RUN"""
+        return _ModelActions(self)
+
+    def run_macro(self, index: int):
+        """Run one of the INI's [MDI_COMMAND_LIST] entries"""
+        if 0 <= index < len(self.mdi_commands):
+            return self.mdi_lines(self.mdi_commands[index][1].split(";"))
+        return False
+
+    # --- helpers -------------------------------------------------------------------------
+
+    def _emit(self, *topics):
+        for topic in topics:
+            self.changed.emit(topic)
+
+
+class _ModelActions:
+    """The qtvcp Action calls that action_controller uses, mapped onto a MachineModel"""
+
+    def __init__(self, model):
+        self.model = model
+
+    def CALL_MDI(self, line):
+        return 0 if self.model.mdi(line) else -1
+
+    def SET_MACHINE_HOMING(self, joint):
+        self.model.home_all()
+
+    def SET_MACHINE_STATE(self, on):
+        self.model.set_power(on)
+
+    def RUN(self, line=0):
+        self.model.run(line)
+
+
+# =======================================================================================
+# Real machine: qtvcp STATUS / ACTION
+# =======================================================================================
+
+class QtvcpMachine(MachineModel):
+    """MachineModel backed by qtvcp's Status (hal_glib) and Action singletons"""
+
+    def __init__(self, halcomp=None, parent=None):
+        super().__init__(parent)
+        from qtvcp.core import Status, Action, Info, Tool
+        self.STATUS, self.ACTION, self.INFO, self.TOOL = Status(), Action(), Info(), Tool()
+        self.halcomp = halcomp
+        self._drawbar_pin = None
+        self._probe_pin = None
+        self._read_ini()
+        self._connect()
+        self._poll()
+
+    # --- setup -------------------------------------------------------------------------
+
+    def _read_ini(self):
+        info = self.INFO
+        coords = (info.get_error_safe_setting("TRAJ", "COORDINATES", "XYZ") or "XYZ").replace(" ", "")
+        self.axes = tuple(a for a in coords.upper() if a in "XYZABCUVW") or AXES
+        self.homed = {a: False for a in self.axes}
+        self.pos_abs = [0.0] * len(self.axes)
+        self.pos_rel = [0.0] * len(self.axes)
+        self.pos_dtg = [0.0] * len(self.axes)
+        self.machine_metric = bool(info.MACHINE_IS_METRIC)
+        self.metric = self.machine_metric
+        self.limits = {}
+        for axis in self.axes:
+            lo = float(info.get_error_safe_setting(f"AXIS_{axis}", "MIN_LIMIT", "0") or 0)
+            hi = float(info.get_error_safe_setting(f"AXIS_{axis}", "MAX_LIMIT", "0") or 0)
+            self.limits[axis] = (lo, hi)
+        self.spindle_min = float(info.MIN_SPINDLE_SPEED or 100)
+        self.spindle_max = float(info.MAX_SPINDLE_SPEED or 3000)
+        self.spindle_default = float(info.DEFAULT_SPINDLE_SPEED or 1000)
+        self.spindle_step = float(info.get_error_safe_setting("DISPLAY", "SPINDLE_INCREMENT", "200") or 200)
+        # Info already scales the override limits to percent
+        self.max_feed_override = float(info.MAX_FEED_OVERRIDE or 200)
+        self.min_spindle_override = float(info.MIN_SPINDLE_OVERRIDE or 50)
+        self.max_spindle_override = float(info.MAX_SPINDLE_OVERRIDE or 100)
+        self.max_velocity = float(info.MAX_TRAJ_VELOCITY or 5000)  # units/min
+        self.velocity_limit = self.max_velocity
+        self.jog_rate = float(info.DEFAULT_LINEAR_JOG_VEL or 1000)
+        self.jog_rate_max = float(info.MAX_LINEAR_JOG_VEL or self.max_velocity)
+        self.jog_rate_min = float(info.MIN_LINEAR_JOG_VEL or 30)
+        self.increments = []
+        for text in info.JOG_INCREMENTS or ["Continuous"]:
+            value = parse_increment(text, self.machine_metric)
+            if value is not None:
+                self.increments.append((format_increment(value, self.units), value))
+        if not any(v == 0 for _, v in self.increments):
+            self.increments.insert(0, ("Cont", 0.0))
+        self.mdi_commands = []
+        labels = info.MDI_COMMAND_LABEL_LIST or []
+        for index, code in enumerate(info.MDI_COMMAND_LIST or []):
+            label = labels[index] if index < len(labels) and labels[index] else code
+            self.mdi_commands.append((str(label).replace("\\n", " ").strip(), code.strip()))
+        self.program_prefix = info.PROGRAM_PREFIX or self.program_prefix
+
+    def _connect(self):
+        S = self.STATUS
+        S.connect("periodic", lambda w: self._poll())
+        S.connect("current-position", self._on_position)
+        S.connect("actual-spindle-speed-changed", self._on_spindle_actual)
+        S.connect("file-loaded", self._on_file_loaded)
+        S.connect("line-changed", self._on_line)
+        S.connect("graphics-gcode-properties", lambda w, props: self._on_properties(props))
+        S.connect("error", self._on_error)
+        S.connect("jograte-changed", lambda w, rate: self._set("jog", jog_rate=float(rate)))
+        S.connect("jogincrement-changed", lambda w, incr, text: self._set("jog", jog_increment=float(incr)))
+        S.connect("tool-info-changed", lambda w, tool: self._on_tool_info(tool))
+        S.connect("interp-run", lambda w: self._on_run_started())
+
+    def make_pins(self, qhal):
+        """HAL pins owned by the screen (called by the screen handler once HAL is available)"""
+        try:
+            self._drawbar_pin = qhal.newpin("drawbar-lift", qhal.HAL_BIT, qhal.HAL_OUT)
+            self._probe_pin = qhal.newpin("led-probe", qhal.HAL_BIT, qhal.HAL_IN)
+            self._probe_pin.value_changed.connect(lambda v: self._set("state", probe_tripped=bool(v)))
+        except Exception as e:
+            self.message.emit("warning", f"Could not create screen HAL pins: {e}")
+
+    # --- state updates -----------------------------------------------------------------
+
+    def _set(self, topic, **fields):
+        changed = False
+        for name, value in fields.items():
+            if getattr(self, name) != value:
+                setattr(self, name, value)
+                changed = True
+        if changed:
+            self.changed.emit(topic)
+        return changed
+
+    def _poll(self):
+        s = self.STATUS.stat
+        L = linuxcnc
+        mode = {L.MODE_MANUAL: "manual", L.MODE_AUTO: "auto", L.MODE_MDI: "mdi"}.get(s.task_mode, "manual")
+        interp = {L.INTERP_IDLE: "idle", L.INTERP_READING: "reading", L.INTERP_PAUSED: "paused",
+                  L.INTERP_WAITING: "waiting"}.get(s.interp_state, "idle")
+        if interp in ("reading", "waiting") and mode == "auto":
+            interp = "running"
+        joints = s.joints
+        homed = {}
+        for i, axis in enumerate(self.axes):
+            homed[axis] = bool(s.homed[i]) if i < joints else False
+        homing = any(s.joint[j]["homing"] for j in range(joints))
+        self._set("state", estop=s.task_state == L.STATE_ESTOP, on=s.task_state == L.STATE_ON,
+                  mode=mode, interp=interp, paused=bool(s.paused))
+        self._set("homing", homed=homed, homing=homing)
+        self._set("offsets", metric=s.program_units != 1 if s.program_units else self.machine_metric,
+                  wcs=WCS_NAMES[s.g5x_index - 1] if 1 <= s.g5x_index <= 9 else "G54")
+        spindle = s.spindle[0]
+        direction = int(spindle["direction"]) if spindle["enabled"] else 0
+        self._set("spindle", spindle_requested=abs(float(spindle["speed"])), spindle_dir=direction)
+        self._set("overrides", feed_override=round(s.feedrate * 100), rapid_override=round(s.rapidrate * 100),
+                  spindle_override=round(spindle["override"] * 100), velocity_limit=s.max_velocity * 60)
+        self._set("coolant", flood=bool(s.flood), mist=bool(s.mist))
+        self._set("tool", tool=int(s.tool_in_spindle))
+        feed = s.current_vel * 60
+        if abs(feed - self.feed_rate) > 0.5:
+            self.feed_rate = feed
+        if self.run_started is not None and not self.paused:
+            self.run_elapsed = time.time() - self.run_started
+        if self.run_started is not None and interp == "idle":
+            self.run_started = None
+            self.changed.emit("program")
+
+    def _convert(self, values):
+        """Machine units -> display units"""
+        if self.metric == self.machine_metric:
+            return list(values)
+        factor = 25.4 if self.metric else 1 / 25.4
+        return [v * factor for v in values]
+
+    def _on_position(self, w, absolute, relative, dtg, joint):
+        n = len(self.axes)
+        self.pos_abs = self._convert(absolute[:n])
+        self.pos_rel = self._convert(relative[:n])
+        self.pos_dtg = self._convert(dtg[:n])
+        self.position_changed.emit()
+
+    def _on_spindle_actual(self, w, speed):
+        self._set("spindle", spindle_actual=abs(float(speed)))
+
+    def _on_file_loaded(self, w, filename):
+        total = 0
+        try:
+            with open(filename, "r", errors="ignore") as f:
+                total = sum(1 for _ in f)
+        except OSError:
+            pass
+        self.file, self.total_lines, self.line = filename, total, 0
+        self.gcode_properties = {}
+        self.run_elapsed = 0.0
+        self.changed.emit("program")
+
+    def _on_line(self, w, line):
+        if line != self.line:
+            self.line = int(line)
+            self.changed.emit("program")
+
+    def _on_run_started(self):
+        if self.mode == "auto" and self.run_started is None:
+            self.run_started = time.time()
+            self.run_elapsed = 0.0
+            self.changed.emit("program")
+
+    def _on_properties(self, props):
+        self.gcode_properties = dict(props or {})
+        self.changed.emit("program")
+
+    def _on_tool_info(self, tool):
+        comment, diameter, length = "", 0.0, 0.0
+        try:
+            if tool.id not in (-1, 0):
+                info = self.TOOL.GET_TOOL_INFO(tool.id)
+                comment = str(info[self.TOOL.COMMENTS]).strip()
+                diameter = float(info[self.TOOL.DIAMETER])
+                length = float(info[self.TOOL.Z])
+        except Exception:
+            pass
+        self._set("tool", tool_comment=comment, tool_diameter=diameter, tool_length=length)
+
+    def _on_error(self, w, kind, text):
+        L = linuxcnc
+        if kind in (L.NML_ERROR, L.OPERATOR_ERROR):
+            level = "error"
+        elif kind in (L.NML_DISPLAY, L.OPERATOR_DISPLAY):
+            level = "info"
+        else:
+            level = "info"
+        self.message.emit(level, str(text).strip())
+
+    # --- commands ------------------------------------------------------------------------
+
+    def set_estop(self, tripped):
+        self.ACTION.SET_ESTOP_STATE(bool(tripped))
+
+    def set_power(self, on):
+        self.ACTION.SET_MACHINE_STATE(bool(on))
+
+    def home_all(self):
+        self.ACTION.SET_MACHINE_HOMING(-1)
+
+    def home_axis(self, axis):
+        self.ACTION.SET_MACHINE_HOMING(self.INFO.get_jnum_from_axisnum(self.axis_index(axis)))
+
+    def unhome_all(self):
+        self.ACTION.SET_MACHINE_UNHOMED(-1)
+
+    def jog_start(self, axis, direction):
+        if not (self.on and not self.estop):
+            self.message.emit("warning", "Turn the machine on to jog")
+            return
+        if self.mode != "manual":
+            self.ACTION.SET_MANUAL_MODE()
+        increment = self.jog_increment
+        rate = self.jog_rate / 60.0
+        self.ACTION.JOG(self.axis_index(axis), direction, rate, increment)
+
+    def jog_stop(self, axis):
+        if self.jog_increment == 0:  # incremental jogs finish on their own
+            self.ACTION.JOG(self.axis_index(axis), 0, 0, 0)
+
+    def set_jog_rate(self, rate):
+        self.ACTION.SET_JOG_RATE(max(self.jog_rate_min, min(self.jog_rate_max, float(rate))))
+
+    def set_jog_increment(self, value, text):
+        self.ACTION.SET_JOG_INCR(float(value), text)
+
+    def set_axis_origin(self, axis, value):
+        self.ACTION.SET_AXIS_ORIGIN(axis, float(value))
+
+    def mdi(self, command):
+        if self.estop or not self.on:
+            self.message.emit("warning", "Turn the machine on first")
+            return False
+        if self.interp != "idle":
+            self.message.emit("warning", "The machine is busy")
+            return False
+        return self.ACTION.CALL_MDI(command) != -1
+
+    def _queue_mdi(self, line):
+        self.ACTION.CALL_MDI(line)
+
+    def run(self, line=0):
+        line = int(line)
+        if line > 1:
+            # qtvcp's run-from-line dialog lets the operator preset spindle/feed/offsets first
+            info = f"<b>Running from line: {line}</b>"
+            self.ACTION.CALL_DIALOG({"NAME": "RUNFROMLINE", "TITLE": "Run from line", "ID": "_RUNFROMLINE",
+                                     "MESSAGE": info, "LINE": line})
+        else:
+            self.ACTION.RUN(0)
+
+    def pause_resume(self):
+        self.ACTION.PAUSE()
+
+    def step(self):
+        self.ACTION.STEP()
+
+    def abort(self):
+        self.ACTION.ABORT()
+
+    def spindle_start(self, direction, rpm):
+        if self.mode != "manual" and self.interp == "idle":
+            self.ACTION.SET_MANUAL_MODE()
+        rpm = max(self.spindle_min, min(self.spindle_max, float(rpm)))
+        self.ACTION.SET_SPINDLE_ROTATION(1 if direction >= 0 else -1, rpm, 0)
+
+    def spindle_stop(self):
+        self.ACTION.SET_SPINDLE_STOP(0)
+
+    def set_feed_override(self, pct):
+        self.ACTION.SET_FEED_RATE(max(0, min(self.max_feed_override, pct)))
+
+    def set_rapid_override(self, pct):
+        self.ACTION.SET_RAPID_RATE(max(0, min(100, pct)))
+
+    def set_spindle_override(self, pct):
+        self.ACTION.SET_SPINDLE_RATE(max(self.min_spindle_override, min(self.max_spindle_override, pct)))
+
+    def set_velocity_limit(self, units_per_min):
+        self.ACTION.SET_MAX_VELOCITY_RATE(max(1.0, min(self.max_velocity, units_per_min)))
+
+    def toggle_flood(self):
+        self.ACTION.TOGGLE_FLOOD()
+
+    def toggle_mist(self):
+        self.ACTION.TOGGLE_MIST()
+
+    def toggle_drawbar(self):
+        if self._drawbar_pin is None:
+            self.message.emit("warning", "Drawbar output is not available")
+            return
+        state = not bool(self._drawbar_pin.get())
+        self._drawbar_pin.set(state)
+        self._set("drawbar", drawbar=state)
+
+    def open_program(self, path):
+        self.ACTION.OPEN_PROGRAM(path)
+
+    def set_wcs(self, name):
+        self.ACTION.SET_USER_SYSTEM(name)
+
+    def reload_tool_table(self):
+        self.ACTION.RELOAD_TOOLTABLE()
+
+    def run_macro(self, index):
+        # The same checks as a typed MDI line
+        if self.estop or not self.on:
+            self.message.emit("warning", "Turn the machine on first")
+            return False
+        if self.interp != "idle":
+            self.message.emit("warning", "The machine is busy")
+            return False
+        self.ACTION.CALL_INI_MDI(index)
+        return True
+
+    def stat(self):
+        return self.STATUS.stat
+
+    def action_api(self):
+        return self.ACTION
+
+
+# =======================================================================================
+# Simulated machine: previews, screenshots and tests
+# =======================================================================================
+
+class SimStat:
+    """Enough of linuxcnc.stat for the AI safety checks, built from a SimMachine"""
+
+    def __init__(self, machine: "SimMachine"):
+        L = linuxcnc
+        m = machine
+        self.task_state = (L.STATE_ESTOP if m.estop else L.STATE_ON if m.on else L.STATE_OFF) if L else 0
+        self.interp_state = (L.INTERP_IDLE if m.interp == "idle" else L.INTERP_READING) if L else 1
+        self.task_mode = {"manual": 1, "auto": 2, "mdi": 3}[m.mode]
+        self.joints = len(m.axes)
+        self.homed = tuple(int(m.homed[a]) for a in m.axes)
+        self.joint = [{"homing": 0}] * len(m.axes)
+        self.axis_mask = (1 << len(m.axes)) - 1
+        self.program_units = 2 if m.metric else 1
+        self.linear_units = 1.0 if m.machine_metric else 1 / 25.4
+        self.gcodes = (0, 900, 210, 540)
+        self.rotation_xy = 0.0
+        self.position = list(m.pos_abs) + [0.0] * (9 - len(m.axes))
+        offset = m.wcs_offsets.get(m.wcs, [0.0] * 3)
+        self.g5x_offset = list(offset) + [0.0] * (9 - len(offset))
+        self.g92_offset = [0.0] * 9
+        self.tool_offset = [0.0] * 9
+        self.axis = [{"min_position_limit": m.limits[a][0], "max_position_limit": m.limits[a][1]} for a in m.axes]
+        self.g5x_index = WCS_NAMES.index(m.wcs) + 1
+        self.spindle = [{"enabled": int(m.spindle_dir != 0), "speed": m.spindle_requested * m.spindle_dir}]
+        self.tool_in_spindle = m.tool
+        self.file = m.file
+        self.ini_filename = ""
+
+    def poll(self):
+        pass
+
+
+class SimMachine(MachineModel):
+    """A believable pretend machine: jogs move, homing homes, programs run"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.limits = {"X": (0.0, 500.0), "Y": (0.0, 175.0), "Z": (-253.0, 0.0)}
+        self.increments = [("Cont", 0.0), ("10", 10.0), ("5", 5.0), ("1", 1.0), ("0.5", 0.5),
+                           ("0.1", 0.1), ("0.05", 0.05), ("0.01", 0.01)]
+        self.max_velocity = 1980.0
+        self.velocity_limit = 1980.0
+        self.jog_rate = 1500.0
+        self.jog_rate_max = 1800.0
+        self.wcs_offsets = {name: [0.0, 0.0, 0.0] for name in WCS_NAMES}
+        self.wcs_offsets["G54"] = [94.675, 84.35, -112.8375]
+        self.pos_abs = [212.5, 96.35, -64.2]
+        self._update_rel()
+        self.mdi_commands = [("Go to G54", "G0 Z0;X0 Y0"), ("Center machine", "G53 G0 Z-10;G53 G0 X250 Y87.5"),
+                             ("Spindle test", "M3 S1000")]
+        self._jogging: Dict[str, int] = {}
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(50)
+        self._last = time.time()
+
+    def _update_rel(self):
+        off = self.wcs_offsets.get(self.wcs, [0.0, 0.0, 0.0])
+        self.pos_rel = [p - o for p, o in zip(self.pos_abs, off)]
+
+    def _tick(self):
+        now = time.time()
+        dt, self._last = now - self._last, now
+        moved = False
+        for axis, direction in list(self._jogging.items()):
+            i = self.axis_index(axis)
+            lo, hi = self.limits[axis]
+            self.pos_abs[i] = max(lo, min(hi, self.pos_abs[i] + direction * self.jog_rate / 60.0 * dt))
+            moved = True
+        if self.spindle_dir:
+            target = self.spindle_requested * self.spindle_override / 100.0
+            self.spindle_actual += (target - self.spindle_actual) * min(1.0, dt * 3)
+            self.changed.emit("spindle")
+        elif self.spindle_actual > 1:
+            self.spindle_actual *= max(0.0, 1 - dt * 3)
+            self.changed.emit("spindle")
+        if self.is_running and not self.paused:
+            self.line = min(self.total_lines, self.line + max(1, int(dt * 20)))
+            self.run_elapsed += dt
+            self.pos_abs[0] = 150 + 60 * ((self.line % 40) / 40.0)
+            self.pos_abs[1] = 90 + 30 * ((self.line % 17) / 17.0)
+            moved = True
+            if self.line >= self.total_lines:
+                self.interp, self.mode, self.run_started = "idle", "manual", None
+                self.message.emit("success", f"{os.path.basename(self.file)} finished")
+                self._emit("state")
+            self.changed.emit("program")
+        if moved:
+            self._update_rel()
+            self.position_changed.emit()
+
+    # --- commands ------------------------------------------------------------------------
+
+    def set_estop(self, tripped):
+        self.estop = bool(tripped)
+        if tripped:
+            self.on = False
+            self._stop_everything()
+        self._emit("state")
+
+    def set_power(self, on):
+        if self.estop and on:
+            self.message.emit("warning", "Release the E-stop first")
+            return
+        self.on = bool(on)
+        if not on:
+            self._stop_everything()
+        self._emit("state")
+
+    def _stop_everything(self):
+        self._jogging.clear()
+        self.spindle_dir = 0
+        if self.is_running:
+            self.interp, self.mode = "idle", "manual"
+        self._emit("spindle", "program")
+
+    def home_all(self):
+        if not self.on:
+            return self.message.emit("warning", "Turn the machine on first")
+        self.homing = True
+        self._emit("state", "homing")
+
+        def done():
+            self.homing = False
+            self.homed = {a: True for a in self.axes}
+            self.pos_abs = [10.0, 10.0, -10.0]
+            self._update_rel()
+            self.position_changed.emit()
+            self._emit("state", "homing")
+        QtCore.QTimer.singleShot(1500, done)
+
+    def home_axis(self, axis):
+        self.homed[axis] = True
+        self._emit("state", "homing")
+
+    def unhome_all(self):
+        self.homed = {a: False for a in self.axes}
+        self._emit("state", "homing")
+
+    def jog_start(self, axis, direction):
+        if not self.on:
+            return self.message.emit("warning", "Turn the machine on to jog")
+        if self.jog_increment:
+            i = self.axis_index(axis)
+            lo, hi = self.limits[axis]
+            self.pos_abs[i] = max(lo, min(hi, self.pos_abs[i] + direction * self.jog_increment))
+            self._update_rel()
+            self.position_changed.emit()
+        else:
+            self._jogging[axis] = direction
+
+    def jog_stop(self, axis):
+        self._jogging.pop(axis, None)
+
+    def set_jog_rate(self, rate):
+        self.jog_rate = max(self.jog_rate_min, min(self.jog_rate_max, float(rate)))
+        self._emit("jog")
+
+    def set_jog_increment(self, value, text):
+        self.jog_increment = float(value)
+        self._emit("jog")
+
+    def set_axis_origin(self, axis, value):
+        i = self.axis_index(axis)
+        self.wcs_offsets[self.wcs][i] = self.pos_abs[i] - float(value)
+        self._update_rel()
+        self.position_changed.emit()
+        self._emit("offsets")
+
+    def mdi(self, command):
+        if not self.on:
+            self.message.emit("warning", "Turn the machine on first")
+            return False
+        self.message.emit("info", f"MDI: {command}")
+        return True
+
+    def _queue_mdi(self, line):
+        self.message.emit("info", f"MDI: {line}")
+
+    def run(self, line=0):
+        if not self.file:
+            return
+        self.mode, self.interp, self.paused = "auto", "running", False
+        self.line = max(0, int(line))
+        self.run_elapsed = 0.0
+        self.run_started = time.time()
+        self._emit("state", "program")
+
+    def pause_resume(self):
+        if self.is_running:
+            self.paused = not self.paused
+            self._emit("state")
+
+    def step(self):
+        pass
+
+    def abort(self):
+        self._jogging.clear()
+        if self.is_running:
+            self.interp, self.mode, self.paused, self.run_started = "idle", "manual", False, None
+            self._emit("state", "program")
+
+    def spindle_start(self, direction, rpm):
+        if not self.on:
+            return self.message.emit("warning", "Turn the machine on first")
+        self.spindle_dir = 1 if direction >= 0 else -1
+        self.spindle_requested = max(self.spindle_min, min(self.spindle_max, float(rpm)))
+        self._emit("spindle")
+
+    def spindle_stop(self):
+        self.spindle_dir = 0
+        self._emit("spindle")
+
+    def set_feed_override(self, pct):
+        self.feed_override = max(0.0, min(self.max_feed_override, float(pct)))
+        self._emit("overrides")
+
+    def set_rapid_override(self, pct):
+        self.rapid_override = max(0.0, min(100.0, float(pct)))
+        self._emit("overrides")
+
+    def set_spindle_override(self, pct):
+        self.spindle_override = max(self.min_spindle_override, min(self.max_spindle_override, float(pct)))
+        self._emit("overrides")
+
+    def set_velocity_limit(self, units_per_min):
+        self.velocity_limit = max(1.0, min(self.max_velocity, float(units_per_min)))
+        self._emit("overrides")
+
+    def toggle_flood(self):
+        self.flood = not self.flood
+        self._emit("coolant")
+
+    def toggle_mist(self):
+        self.mist = not self.mist
+        self._emit("coolant")
+
+    def toggle_drawbar(self):
+        self.drawbar = not self.drawbar
+        self._emit("drawbar")
+
+    def open_program(self, path):
+        self.file = path
+        try:
+            with open(path, "r", errors="ignore") as f:
+                self.total_lines = sum(1 for _ in f)
+        except OSError:
+            self.total_lines = 480
+        self.line = 0
+        self.run_elapsed = 0.0
+        self.gcode_properties = {"run": "12:40", "x": "12.00 to 88.00 = 76.00 mm", "y": "12.00 to 88.00 = 76.00 mm",
+                                 "z": "-5.00 to 5.00 = 10.00 mm", "toollist": "T8"}
+        self._emit("program")
+
+    def set_wcs(self, name):
+        self.wcs = name
+        self._update_rel()
+        self.position_changed.emit()
+        self._emit("offsets")
+
+    def reload_tool_table(self):
+        pass
+
+    def stat(self):
+        return SimStat(self) if linuxcnc else None

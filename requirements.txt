@@ -1,0 +1,16 @@
+# Python packages for the AI Assistant, installed into the config's venv:
+#   python3 -m venv --system-site-packages venv    (needs the system linuxcnc, hal, qtvcp and PyQt5)
+#   venv/bin/pip install -r requirements.txt
+# Don't pip-install PyQt5: it would shadow the system PyQt5 that qtvcp is built against.
+
+openai==2.13.0
+numpy==1.26.4
+qtawesome==1.4.0
+pyqtspinner==2.0.0
+sounddevice==0.5.3
+soundfile==0.13.1
+vosk==0.3.45
+pytest==7.4.4
+
+# CAM IR compiler (git submodule); pulls in pydantic, shapely and pyclipper
+-e ./libs/cam_ir

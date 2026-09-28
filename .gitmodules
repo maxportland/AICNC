@@ -1,0 +1,3 @@
+[submodule "libs/cam_ir"]
+	path = libs/cam_ir
+	url = git@github.com:maxportland/cam_ir.git
