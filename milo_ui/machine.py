@@ -125,6 +125,9 @@ class MachineModel(QtCore.QObject):
 
         self.mdi_commands: List[Tuple[str, str]] = []  # (label, code) from the INI
         self.program_prefix = os.path.expanduser("~/linuxcnc/nc_files")
+        config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.tool_table_path = os.path.join(config_dir, "tool.tbl")
+        self.tool_links_path = os.path.join(config_dir, "tool_links.json")
 
     # --- derived -------------------------------------------------------------------------
 
@@ -354,6 +357,10 @@ class QtvcpMachine(MachineModel):
             label = labels[index] if index < len(labels) and labels[index] else code
             self.mdi_commands.append((str(label).replace("\\n", " ").strip(), code.strip()))
         self.program_prefix = info.PROGRAM_PREFIX or self.program_prefix
+        table = info.get_error_safe_setting("EMCIO", "TOOL_TABLE", "tool.tbl") or "tool.tbl"
+        config_dir = os.path.dirname(os.path.abspath(info.INIPATH))
+        self.tool_table_path = table if os.path.isabs(table) else os.path.join(config_dir, table)
+        self.tool_links_path = os.path.join(config_dir, "tool_links.json")
 
     def _connect(self):
         S = self.STATUS
@@ -678,6 +685,14 @@ class SimMachine(MachineModel):
         self._update_rel()
         self.mdi_commands = [("Go to G54", "G0 Z0;X0 Y0"), ("Center machine", "G53 G0 Z-10;G53 G0 X250 Y87.5"),
                              ("Spindle test", "M3 S1000")]
+        # Previews edit copies, never the real tool table
+        import shutil
+        import tempfile
+        sim_dir = tempfile.mkdtemp(prefix="milo-sim-")
+        if os.path.exists(self.tool_table_path):
+            shutil.copy(self.tool_table_path, os.path.join(sim_dir, "tool.tbl"))
+        self.tool_table_path = os.path.join(sim_dir, "tool.tbl")
+        self.tool_links_path = os.path.join(sim_dir, "tool_links.json")
         self._jogging: Dict[str, int] = {}
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)

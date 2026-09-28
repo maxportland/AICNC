@@ -90,3 +90,10 @@ def test_extract_json(text):
 
 def test_extract_json_rejects_arithmetic():
     assert CAMIRProcessor().extract_json_from_response('{"points": [[50 + 30, 50]]}') is None
+
+
+def test_cut_deeper_than_flute_length_rejected(tmp_path):
+    _, error, _ = _run(tmp_path, _ir(bottom_z=-8), tools={8: 6.35}, flute_lengths={8: 6.0})
+    assert error and "flutes are only 6 long" in error
+    path, error, _ = _run(tmp_path, _ir(bottom_z=-5), tools={8: 6.35}, flute_lengths={8: 6.0})
+    assert error is None

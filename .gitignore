@@ -5,6 +5,7 @@ venv/
 
 # Machine state written by LinuxCNC / qtdragon at runtime
 tool.tbl
+tool_links.json
 linuxcnc.var
 linuxcnc.var.bak
 qtdragon.pref

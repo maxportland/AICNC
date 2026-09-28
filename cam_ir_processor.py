@@ -68,6 +68,16 @@ except ImportError as e:
     ThreadOp = None
 
 
+def operation_depth(op) -> Optional[float]:
+    """How deep an operation cuts below its top (IR units), or None if it can't be told"""
+    top = getattr(op, "top_z", None)
+    bottom = getattr(op, "bottom_z", None)
+    if top is not None and bottom is not None:
+        return abs(top - bottom)
+    depth = getattr(op, "depth", None)
+    return abs(depth) if depth is not None else None
+
+
 class CAMIRProcessor:
     """Processes CAM IR JSON into G-code"""
     
@@ -161,7 +171,8 @@ class CAMIRProcessor:
         return moves
     
     def check_against_machine(self, ir, tools: Optional[Dict[int, Optional[float]]],
-                              machine_units: str, max_rpm: Optional[float]) -> List[str]:
+                              machine_units: str, max_rpm: Optional[float],
+                              flute_lengths: Optional[Dict[int, float]] = None) -> List[str]:
         """
         Reconcile the IR with the machine. Tool diameters from the tool table
         replace the IR's (the model guesses; the table is the physical tool).
@@ -172,11 +183,22 @@ class CAMIRProcessor:
                    or None to skip tool checks
             machine_units: "mm" or "inch"
             max_rpm: Spindle maximum, or None to skip the check
+            flute_lengths: Tool number -> flute length in machine units, for tools linked to a
+                           catalog entry; no operation may cut deeper than that
 
         Returns:
             Error messages (empty if the IR fits the machine)
         """
         errors = []
+        if flute_lengths:
+            ir_units = ir.units.value if hasattr(ir.units, "value") else str(ir.units)
+            scale = 1.0 if ir_units == machine_units else (1 / 25.4 if machine_units == "mm" else 25.4)
+            for i, op in enumerate(ir.ops):
+                limit = flute_lengths.get(getattr(op, "tool", None))
+                depth = operation_depth(op)
+                if limit and depth is not None and depth > limit * scale + 1e-6:
+                    errors.append(f"Operation {i} ({op.op}) cuts {depth:g} deep, but T{op.tool}'s flutes are only "
+                                  f"{limit * scale:g} long. Use a longer tool or a shallower cut.")
         if tools is not None:
             ir_units = ir.units.value if hasattr(ir.units, "value") else str(ir.units)
             scale = 1.0
@@ -218,6 +240,7 @@ class CAMIRProcessor:
         tools: Optional[Dict[int, Optional[float]]] = None,
         machine_units: str = "mm",
         max_rpm: Optional[float] = None,
+        flute_lengths: Optional[Dict[int, float]] = None,
     ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
         Process CAM IR data into G-code.
@@ -277,7 +300,7 @@ class CAMIRProcessor:
                 return None, None, f"CAM IR validation failed: {e}"
 
             # Check against the machine (tool table, spindle limit)
-            machine_errors = self.check_against_machine(ir, tools, machine_units, max_rpm)
+            machine_errors = self.check_against_machine(ir, tools, machine_units, max_rpm, flute_lengths)
             if machine_errors:
                 return None, None, "CAM IR doesn't fit the machine: " + "\n".join(machine_errors)
             

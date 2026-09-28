@@ -40,8 +40,9 @@ def read_tool_table(path):
 class SimToolTable(QtWidgets.QTableWidget):
     """Read-only tool table for previews (the real screen uses qtvcp's ToolOffsetView)"""
 
-    def __init__(self, parent=None):
+    def __init__(self, path=None, parent=None):
         super().__init__(parent)
+        self.path = path or os.path.join(CONFIG_DIR, "tool.tbl")
         self.setColumnCount(4)
         self.setHorizontalHeaderLabels(["Tool", "Diameter", "Length (Z)", "Description"])
         self.verticalHeader().hide()
@@ -53,7 +54,7 @@ class SimToolTable(QtWidgets.QTableWidget):
         self.reload()
 
     def reload(self):
-        tools = read_tool_table(os.path.join(CONFIG_DIR, "tool.tbl"))
+        tools = read_tool_table(self.path)
         self.setRowCount(len(tools))
         for row, (number, dia, z, comment) in enumerate(sorted(tools)):
             for col, text in enumerate((f"T{number}", f"{dia:g}", f"{z:.3f}", comment)):
@@ -75,9 +76,11 @@ class CurrentTool(kit.Card):
         words.setSpacing(4)
         self.name = kit.label("", "value", size=T.title, weight=theme.SEMIBOLD, wrap=True)
         self.facts = kit.label("", "muted")
+        self.catalog = kit.label("", "muted", wrap=True)
         words.addStretch(1)
         words.addWidget(self.name)
         words.addWidget(self.facts)
+        words.addWidget(self.catalog)
         words.addStretch(1)
         hero.addLayout(words, 1)
         self.add(hero)
@@ -130,6 +133,13 @@ class CurrentTool(kit.Card):
         if m.tool_length:
             facts.append(f"length {m.tool_length:.3f}")
         self.facts.setText("  ·  ".join(facts))
+        import fusion_tools as ft
+        linked = ft.load_links(m.tool_links_path).get(m.tool) if m.tool else None
+        if linked is not None:
+            self.catalog.setText(f"<span style='color:{C.accent_hi}'>●</span> {linked.vendor} {linked.product_id}"
+                                 f" · {linked.flutes} flutes · cuts {linked.flute_length:.3g} mm deep"
+                                 f" · {len(linked.presets)} material preset{'s' if len(linked.presets) != 1 else ''}")
+        self.catalog.setVisible(linked is not None)
         ok = m.ready
         for button in (self.change, self.set, self.g43):
             button.setEnabled(ok)
@@ -154,24 +164,35 @@ class ToolsPage(Page):
         row = QtWidgets.QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(20)
-        left = kit.vbox(CurrentTool(shell), "stretch", spacing=20)
+        self.current = CurrentTool(shell)
+        left = kit.vbox(self.current, "stretch", spacing=20)
         holder = QtWidgets.QWidget()
         holder.setLayout(left)
         holder.setFixedWidth(620)
         row.addWidget(holder)
 
-        self.table = tool_table if tool_table is not None else SimToolTable()
+        self.table = tool_table if tool_table is not None else SimToolTable(shell.machine.tool_table_path)
         actions = QtWidgets.QHBoxLayout()
         actions.setSpacing(8)
         if hasattr(self.table, "add_tool"):
             actions.addWidget(kit.Button("Add", icon="plus", size="sm", on_click=self.table.add_tool))
             actions.addWidget(kit.Button("Delete checked", icon="trash", size="sm", on_click=self.table.delete_tools))
         actions.addWidget(kit.Button("Reload", icon="arrows-clockwise", size="sm", on_click=self._reload))
+        actions.addWidget(kit.Button("Tool library", icon="books", variant="primary", size="sm",
+                                     on_click=self.open_library))
         card = kit.Card(title="Tool table", trailing=actions)
         card.add(self.table, 1)
         hint = kit.label("Tap a cell to edit it. Milo reads this table when it plans programs.", "muted")
         card.add(hint)
         row.addWidget(card, 1)
+
+    def open_library(self):
+        from milo_ui.pages.tool_library import ToolLibrary
+        library = ToolLibrary(self, self.shell)
+        library.changed.connect(self._reload)
+        library.changed.connect(self.current.refresh)
+        library.show_centered()
+        return library
 
     def _reload(self):
         self.shell.machine.reload_tool_table()

@@ -28,6 +28,7 @@ from machine_safety import describe_machine, spindle_max_rpm, machine_units
 from action_controller import MACHINE_INTENTS, propose_action, execute_action
 from action_confirmation import ActionConfirmation, classify_reply, is_cancel_reply, strip_wake_phrase
 from tool_table import get_tool_table
+from fusion_tools import load_links, describe_for_prompt
 from cam_ir_processor import CAMIRProcessor
 from log_sources import append_ai_log
 from voice_recording_manager import VoiceRecordingManager
@@ -316,11 +317,24 @@ class MiloEngine:
         self._show_busy("Thinking…")
         self.routing_request = (text, from_voice)
         self.router_worker = IntentRouterWorker(
-            self.intent_router, text, describe_machine(self._stat()), list(self.router_history)
+            self.intent_router, text, self._machine_context(), list(self.router_history)
         )
         self.router_worker.finished.connect(self._on_intent)
         self.router_worker.error.connect(self._on_intent_error)
         self.router_worker.start()
+
+    def _machine_context(self):
+        """Machine state for the router, plus the catalog data of the tool in the spindle"""
+        stat = self._stat()
+        context = describe_machine(stat)
+        number = getattr(stat, "tool_in_spindle", 0) if stat is not None else 0
+        if number:
+            tool = load_links(os.path.join(self.config_dir, "tool_links.json")).get(int(number))
+            if tool is not None:
+                context += "\n" + describe_for_prompt(int(number), tool, 0, spindle_max_rpm(stat) or 0,
+                                                      machine_units(stat)).rstrip()
+                context += f"\n  T{number} description: {tool.description}"
+        return context
 
     def _on_intent(self, result):
         """Act on the router's decision (runs in main thread)"""
@@ -501,8 +515,25 @@ class MiloEngine:
     # --- programs (CAM) ----------------------------------------------------------------------
 
     def _load_tool_table(self):
-        """Read tool.tbl; returns the prompt text and stores the usable tools for the CAM processor"""
-        text, self.machine_tools = get_tool_table(self.config_dir, machine_units(self._stat()), self._log_once)
+        """Read tool.tbl; returns the prompt text and stores the usable tools for the CAM processor.
+        Tools linked to a Fusion 360 catalog entry add their geometry and cutting data."""
+        units = machine_units(self._stat())
+        text, self.machine_tools = get_tool_table(self.config_dir, units, self._log_once)
+        self.machine_flute_lengths = {}
+        links = load_links(os.path.join(self.config_dir, "tool_links.json"))
+        linked = {n: t for n, t in links.items() if self.machine_tools and n in self.machine_tools}
+        if linked:
+            max_rpm = spindle_max_rpm(self._stat()) or 0
+            text += "\nCATALOG DATA FOR LINKED TOOLS (from the vendors' Fusion 360 libraries):\n"
+            k = 1.0 if units == "mm" else 1 / 25.4
+            for number, tool in sorted(linked.items()):
+                table_diameter = self.machine_tools.get(number)
+                if table_diameter is not None and abs(table_diameter - tool.diameter * k) > 0.05 * max(1.0, table_diameter):
+                    self._log_once(f"[TOOLS] T{number}: tool table diameter {table_diameter:g} doesn't match its "
+                                   f"catalog tool ({tool.diameter * k:.4g}); the table is used")
+                text += describe_for_prompt(number, tool, 0, max_rpm, units)
+                if tool.flute_length > 0:
+                    self.machine_flute_lengths[number] = tool.flute_length * k
         return text
 
     def _cam_system_prompt(self):
@@ -610,6 +641,7 @@ class MiloEngine:
             tools=self.machine_tools,
             machine_units=machine_units(self._stat()),
             max_rpm=spindle_max_rpm(self._stat()),
+            flute_lengths=getattr(self, "machine_flute_lengths", None),
         )
         self.cam_worker.log.connect(self.log)
         self.cam_worker.progress.connect(self._update_progress)

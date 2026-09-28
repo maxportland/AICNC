@@ -159,6 +159,20 @@ def main():
     if args.popover == "axis":
         dro = shell.pages["home"].dro
         dro._axis_menu("X")
+    elif args.popover in ("library", "import"):
+        # Preview against copies of the Desktop libraries, never the real library folder
+        import glob, shutil, tempfile
+        import fusion_tools
+        fusion_tools.LIBRARY_DIR = tempfile.mkdtemp(prefix="milo-lib-")
+        if args.popover == "library":
+            for path in glob.glob(os.path.expanduser("~/Desktop/*.json"))[:3]:
+                shutil.copy(path, fusion_tools.LIBRARY_DIR)
+        shell.navigate("tools")
+        library = shell.pages["tools"].open_library()
+        if args.popover == "import":
+            library._import()
+        else:
+            library.search.setText("W04007")
     elif args.popover == "numpad":
         from milo_ui import kit
         kit.NumPad(shell, "Spindle speed", lambda v: None, initial=2400, units="rpm",

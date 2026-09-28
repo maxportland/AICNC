@@ -181,3 +181,30 @@ def test_macros_ask_first(shell, monkeypatch):
     page = shell.pages["jog"]
     page._macro(0, page.zero_button)
     assert ran == []  # only after tapping Run on the sheet
+
+
+def test_tool_library_adds_a_tool_to_the_machine(shell, tmp_path, monkeypatch):
+    import json
+    import fusion_tools as ft
+    monkeypatch.setattr(ft, "LIBRARY_DIR", str(tmp_path / "libs"))
+    os.makedirs(ft.LIBRARY_DIR)
+    tool = {"guid": "g1", "vendor": "Acme", "product-id": "A-1", "description": "Acme 6mm upcut",
+            "type": "flat end mill", "unit": "millimeters",
+            "geometry": {"DC": 6, "NOF": 2, "LCF": 20, "OAL": 60, "SFDM": 6},
+            "start-values": {"presets": [{"name": "Oak", "n": 18000, "v_f": 3600, "f_z": 0.1}]}}
+    with open(os.path.join(ft.LIBRARY_DIR, "acme.json"), "w") as f:
+        json.dump({"data": [tool], "version": 1}, f)
+    shell.navigate("tools")
+    library = shell.pages["tools"].open_library()
+    assert library.list.count() == 1
+    from milo_ui.pages.tool_library import TOOL_ROLE
+    library._write(12, library.list.item(0).data(TOOL_ROLE))
+    m = shell.machine
+    assert "T12 P12 D6.0000" in open(m.tool_table_path).read()
+    assert ft.load_links(m.tool_links_path)[12].product_id == "A-1"
+    m.tool = 12
+    page = shell.pages["tools"]
+    page.current.refresh()
+    assert "Acme A-1" in page.current.catalog.text()
+    # the real tool table is untouched: previews edit a copy
+    assert m.tool_table_path.startswith(os.path.join(os.sep, "tmp")) or "milo-sim-" in m.tool_table_path
