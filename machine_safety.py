@@ -330,6 +330,38 @@ def _check_soft_limits(words, g_codes, stat) -> Optional[str]:
     return None
 
 
+def check_obstacles(command: str, stat, heightmap, tool_radius: float = 3.2, clearance: float = 0.5) -> Optional[str]:
+    """
+    Check a G0/G1 line against the camera's height map (milo_vision.heightmap.HeightMap, machine
+    mm): the tool tip must stay above everything within tool_radius along the straight path.
+    Obstacles no higher than what the tool is already in at the start (the stock being cut)
+    don't count. Returns a reason to refuse, or None.
+    """
+    if heightmap is None:
+        return None
+    try:
+        words = parse_mdi(command)
+    except ValueError:
+        return None
+    g_codes = {int(v) for letter, v in words if letter == "G"}
+    if not g_codes & {0, 1} or g_codes & {28, 30}:
+        return None
+    targets, error = _move_targets(words, g_codes, stat)
+    if error or not targets:
+        return None
+    pos, tool_z = stat.position, stat.tool_offset[2]
+    start = (pos[0], pos[1], pos[2] - tool_z)
+    end = (targets.get("X", pos[0]), targets.get("Y", pos[1]), targets.get("Z", pos[2]) - tool_z)
+    engaged = heightmap.max_in_circle(start[0], start[1], tool_radius)
+    ignore = engaged if engaged is not None and start[2] < engaged + clearance else None
+    hit = heightmap.check_move(start, end, tool_radius, clearance, ignore_below=ignore)
+    if hit is None:
+        return None
+    return (f"the tool would pass through something the camera measured there: at X{hit['x']:.1f} "
+            f"Y{hit['y']:.1f} the tip would be at Z{hit['tip_z']:.1f}, but there's material up to "
+            f"Z{hit['obstacle_z']:.1f} (machine, tip). Raise Z first, or rescan the table if the setup changed")
+
+
 def max_feed(stat) -> Optional[float]:
     """Maximum linear feed from [TRAJ] MAX_LINEAR_VELOCITY, in machine units per minute"""
     ini = _ini(stat)

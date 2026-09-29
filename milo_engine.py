@@ -334,7 +334,23 @@ class MiloEngine:
                 context += "\n" + describe_for_prompt(int(number), tool, 0, spindle_max_rpm(stat) or 0,
                                                       machine_units(stat)).rstrip()
                 context += f"\n  T{number} description: {tool.description}"
+        vision = self._vision_context()
+        if vision:
+            context += "\n" + vision
         return context
+
+    def _vision_context(self):
+        """What the camera's last table scan found (empty if there's no camera setup)"""
+        try:
+            from milo_vision import state as vstate
+            from milo_vision.geometry import CameraModel, CAMERA_FILE
+        except ImportError:
+            return ""
+        vision_dir = os.path.join(self.config_dir, "vision")
+        if not os.path.isdir(vision_dir):
+            return ""
+        calibrated = CameraModel.load(os.path.join(vision_dir, "camera.json")).calibrated
+        return vstate.describe(vstate.load(vision_dir), calibrated)
 
     def _on_intent(self, result):
         """Act on the router's decision (runs in main thread)"""
@@ -545,6 +561,11 @@ class MiloEngine:
                           f"so coolant must be \"{DEFAULT_COOLANT}\" or \"none\"")
         if max_rpm is not None:
             machine_limits += f"; spindle maximum {max_rpm:g} rpm. Every rpm value MUST be <= {max_rpm:g}"
+        vision = self._vision_context()
+        if vision:
+            machine_limits += ("\n" + vision + "\nThe scan is in MACHINE coordinates; programs use work coordinates "
+                               "(G54). Use the scanned size for the stock, but don't place geometry by machine "
+                               "position unless the user asks.")
         return CAM_PROMPT_HEAD + f"{tool_table_context}\n{machine_limits}\n\n" + CAM_PROMPT_SCHEMA
 
     def reset_message_history(self, announce=True):

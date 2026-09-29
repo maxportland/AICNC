@@ -10,6 +10,7 @@ screen run against SimMachine for previews.
 Topics: state, homing, position, spindle, overrides, tool, program, offsets, jog, coolant, drawbar
 """
 
+import math
 import os
 import re
 import time
@@ -149,6 +150,10 @@ class MachineModel(QtCore.QObject):
         return self.mode == "auto" and self.interp != "idle"
 
     @property
+    def moving(self) -> bool:
+        return self.interp != "idle" or bool(getattr(self, "_targets", None))
+
+    @property
     def ready(self) -> bool:
         """On, idle and homed: safe to accept motion commands"""
         return not self.estop and self.on and self.interp == "idle" and self.all_homed
@@ -251,6 +256,38 @@ class MachineModel(QtCore.QObject):
 
     def _queue_mdi(self, line):
         raise NotImplementedError
+
+    def move_to(self, x=None, y=None, z=None):
+        """Rapid the spindle to a machine position (G53); Z first when going up, last when down"""
+        words = []
+        if z is not None and z >= self.pos_abs[2]:
+            if not self.mdi(f"G90 G53 G0 Z{z:.4f}"):
+                return False
+            z_done = True
+        else:
+            z_done = False
+        if x is not None:
+            words.append(f"X{x:.4f}")
+        if y is not None:
+            words.append(f"Y{y:.4f}")
+        lines = [f"G90 G53 G0 {' '.join(words)}"] if words else []
+        if z is not None and not z_done:
+            lines.append(f"G90 G53 G0 Z{z:.4f}")
+        if not lines:
+            return True
+        if z_done:
+            for line in lines:
+                self._queue_mdi(line)
+            return True
+        return self.mdi_lines(lines)
+
+    def at_position(self, x=None, y=None, z=None, tolerance=0.02) -> bool:
+        """Stopped at a machine position (for step-by-step routines like a camera scan)"""
+        target = (x, y, z)
+        for i, value in enumerate(target):
+            if value is not None and abs(self.pos_abs[i] - value) > tolerance:
+                return False
+        return not self.moving
 
     def go_to_work_zero(self):
         """Lift to machine Z0 first, then rapid to the work X0 Y0"""
@@ -694,6 +731,7 @@ class SimMachine(MachineModel):
         self.tool_table_path = os.path.join(sim_dir, "tool.tbl")
         self.tool_links_path = os.path.join(sim_dir, "tool_links.json")
         self._jogging: Dict[str, int] = {}
+        self._targets: List[List[Optional[float]]] = []  # queued simulated G53 rapids
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(50)
@@ -712,6 +750,22 @@ class SimMachine(MachineModel):
             lo, hi = self.limits[axis]
             self.pos_abs[i] = max(lo, min(hi, self.pos_abs[i] + direction * self.jog_rate / 60.0 * dt))
             moved = True
+        if self._targets:
+            target = self._targets[0]
+            speed = 6000.0 / 60.0 * dt
+            done = True
+            for i, value in enumerate(target):
+                if value is None:
+                    continue
+                delta = value - self.pos_abs[i]
+                if abs(delta) > speed:
+                    self.pos_abs[i] += math.copysign(speed, delta)
+                    done = False
+                else:
+                    self.pos_abs[i] = value
+            moved = True
+            if done:
+                self._targets.pop(0)
         if self.spindle_dir:
             target = self.spindle_requested * self.spindle_override / 100.0
             self.spindle_actual += (target - self.spindle_actual) * min(1.0, dt * 3)
@@ -754,6 +808,7 @@ class SimMachine(MachineModel):
 
     def _stop_everything(self):
         self._jogging.clear()
+        self._targets.clear()
         self.spindle_dir = 0
         if self.is_running:
             self.interp, self.mode = "idle", "manual"
@@ -816,11 +871,23 @@ class SimMachine(MachineModel):
         if not self.on:
             self.message.emit("warning", "Turn the machine on first")
             return False
+        self._simulate(command)
         self.message.emit("info", f"MDI: {command}")
         return True
 
     def _queue_mdi(self, line):
+        self._simulate(line)
         self.message.emit("info", f"MDI: {line}")
+
+    def _simulate(self, line):
+        """Pretend-move for G53 rapids (camera scans and moves in previews and tests)"""
+        words = line.upper().split()
+        if "G53" in words and "G0" in words:
+            target = [None, None, None]
+            for w in words:
+                if w[0] in "XYZ" and len(w) > 1:
+                    target["XYZ".index(w[0])] = float(w[1:])
+            self._targets.append(target)
 
     def run(self, line=0):
         if not self.file:
@@ -841,6 +908,7 @@ class SimMachine(MachineModel):
 
     def abort(self):
         self._jogging.clear()
+        self._targets.clear()
         if self.is_running:
             self.interp, self.mode, self.paused, self.run_started = "idle", "manual", False, None
             self._emit("state", "program")

@@ -9,9 +9,35 @@ No Qt here. The widget passes in linuxcnc.stat and the qtvcp Action API, so the 
 import os
 
 from ai_config import DEFAULT_CIRCLE_FEED
-from machine_safety import (validate_mdi, check_machine_ready, check_program_ready, check_power_on,
+from machine_safety import (validate_mdi, check_obstacles, check_machine_ready, check_program_ready, check_power_on,
                             check_power_off, program_running, parse_mdi, machine_units, work_move_note,
                             circle_commands, validate_circle)
+
+_heightmap_cache = {}
+
+
+def _heightmap():
+    """The camera's height map (vision/heightmap.npz), if a scan made one; reloaded when it changes"""
+    try:
+        from milo_vision.heightmap import HeightMap, HEIGHTMAP_FILE
+    except ImportError:
+        return None
+    try:
+        mtime = os.path.getmtime(HEIGHTMAP_FILE)
+    except OSError:
+        return None
+    if _heightmap_cache.get("mtime") != mtime:
+        _heightmap_cache.update(mtime=mtime, map=HeightMap.load(HEIGHTMAP_FILE))
+    return _heightmap_cache["map"]
+
+
+def check_path(command, stat, heightmap=None):
+    """validate_mdi, plus the camera's obstacle map when there is one"""
+    reason = validate_mdi(command, stat)
+    if reason:
+        return reason
+    return check_obstacles(command, stat, heightmap if heightmap is not None else _heightmap())
+
 
 # Router intents that become a confirmable machine action
 MACHINE_INTENTS = {"mdi", "home", "circle", "power_on", "power_off", "run"}
@@ -28,7 +54,7 @@ def propose_action(result, stat):
 
     if intent == "mdi":
         command = result["mdi"]
-        reason = validate_mdi(command, stat)
+        reason = check_path(command, stat)
         if reason:
             return None, f"I won't run '{command}': {reason}"
         summary = result["summary"] or command
@@ -138,7 +164,7 @@ def execute_action(action, stat, api):
         return f"[MILO] Running {os.path.basename(stat.file)}.", True
 
     command = action["command"]
-    reason = validate_mdi(command, stat)
+    reason = check_path(command, stat)
     if reason:
         return f"[MILO] Not running '{command}': {reason}", False
     # G91 is modal; put the machine back in G90 afterwards if that's where it was

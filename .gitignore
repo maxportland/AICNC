@@ -33,3 +33,8 @@ backups/
 launch_linuxcnc_with_gammaray.sh
 # Old checkout; pyqtspinner now comes from requirements.txt
 libs/QtWaitingSpinner/
+
+# Camera scan results (machine state; vision/camera.json calibration is kept)
+vision/state.json
+vision/mosaic.png
+vision/heightmap.npz

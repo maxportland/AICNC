@@ -112,6 +112,10 @@ number pad, nothing relies on hover, and scrolling is by drag. Fonts (Inter, Jet
   apply G43, the power drawbar, the tool table, and the Fusion 360 **Tool library** (below).
 - **Offsets**: the active work system (G54-G59), the offset table, and saved fixtures (`fixtures.json`).
 - **Probe**: qtvcp's probing routines, plus the tool setter and touch plate with their parameters.
+- **Vision**: the camera on the head (see [VISION_HARDWARE.md](VISION_HARDWARE.md) for the shopping list
+  and setup). Scan the table to find parts, see them on a stitched map, and create a probe program
+  that measures the chosen part and sets G54. Milo knows what the scan found, and its moves are
+  checked against the measured heights.
 - **Activity**: every log (machine, screen, Milo, LinuxCNC) live, filterable and searchable.
 - **Settings**: OpenAI API key, wake word, listening timeouts, technical details, on-screen keyboard,
   pendant configuration, machine facts, shut down.
@@ -563,6 +567,8 @@ AICNC/
 ├── custom_action.py, subprograms.py   # Tool setter routine
 ├── facing_utility.py       # Facing generator with step-down passes
 ├── fusion_tools.py         # Fusion 360 tool libraries: reading, feed rescaling, tool.tbl links
+├── milo_vision/            # Camera: calibration, detection, table scans, heights, probe programs
+├── VISION_HARDWARE.md      # Camera/laser/probe shopping list and mounting design
 ├── requirements.txt        # Pinned Python packages for the venv
 ├── libs/cam_ir/            # CAM IR library (git submodule)
 ├── tests/                  # venv/bin/python -m pytest tests

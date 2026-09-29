@@ -78,7 +78,8 @@ def build(page="home"):
     prefs = Prefs(path=os.path.join(os.environ.get("TMPDIR", "/tmp"), "milo_preview_prefs.json"))
     shell = MiloShell(machine, prefs=prefs)
     shell.make_bridge()
-    build_pages(shell)
+    import tempfile
+    build_pages(shell, vision_dir=tempfile.mkdtemp(prefix="milo-vision-"))
     engine = ScriptedEngine(shell)
     shell.attach_engine(engine)
     shell.resize(1920, 1080)
@@ -145,6 +146,8 @@ def main():
     parser.add_argument("--scenario", default="ready")
     parser.add_argument("--keyboard", action="store_true", help="show the on-screen keyboard")
     parser.add_argument("--popover", default="", help="open a popover: axis, numpad, menu")
+    parser.add_argument("--wait", type=float, default=0.0, help="seconds to let timers run before the shot")
+    parser.add_argument("--scan", action="store_true", help="Vision page: run a table scan first")
     args = parser.parse_args()
     if args.shot:
         os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -177,7 +180,17 @@ def main():
         from milo_ui import kit
         kit.NumPad(shell, "Spindle speed", lambda v: None, initial=2400, units="rpm",
                    hint="100 to 3000 rpm", presets=[("1000", 1000), ("2000", 2000), ("3000", 3000)]).show_centered()
+    if args.scan:
+        vision = shell.pages["vision"]
+        vision.on_show()
+        from milo_vision import scan as scanning
+        vision._scan(scanning.plan_scan(machine.limits, vision.model, vision._scan_z()))
     if args.shot:
+        import time as _time
+        end = _time.time() + args.wait
+        while _time.time() < end:
+            app.processEvents()
+            QtCore.QThread.msleep(20)
         for _ in range(12):
             app.processEvents()
             QtCore.QThread.msleep(30)

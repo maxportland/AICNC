@@ -54,6 +54,13 @@ def isolated_ai_log(tmp_path, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def no_real_heightmap(monkeypatch):
+    """Tests never see a height map from a real camera scan of this machine"""
+    import action_controller
+    monkeypatch.setattr(action_controller, "_heightmap", lambda: None)
+
+
 @pytest.fixture
 def stat():
     return FakeStat()
