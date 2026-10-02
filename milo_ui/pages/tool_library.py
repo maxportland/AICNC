@@ -10,8 +10,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 import fusion_tools as ft
-from milo_ui import theme, kit
+from milo_ui import theme, kit, tool_filters as tf
 from milo_ui.theme import C, T
+
+FILTER_PREFS = "tool_library_filters"  # the extra filters and sort, kept between visits
 
 TOOL_ROLE = Qt.UserRole + 1
 
@@ -41,14 +43,25 @@ def load_cached(path) -> List[ft.FusionTool]:
     return _cache[path][1]
 
 
-def fmt_len(mm, unit):
-    if unit == "inches":
-        return f"{mm / ft.IN:.4g}\""
+def fmt_len(mm, units):
+    """A length in the modal's units ('mm' or 'in'): inch sizes as fractions when they are one (1-1/8")"""
+    if units in ("in", "inches"):
+        return tf.inch_fraction(mm) or f"{mm / ft.IN:.4g}\""
     return f"{mm:.3g} mm"
+
+
+def fmt_diameter(mm, units):
+    """The diameter in the modal's units, with the other system alongside: '1/4" (6.35 mm)', '6 mm (0.236")'"""
+    if units in ("in", "inches"):
+        return f"{fmt_len(mm, 'in')} ({mm:.3g} mm)"
+    inch = tf.inch_fraction(mm)
+    return f"{mm:.3g} mm ({inch})" if inch else f"{mm:.3g} mm"
 
 
 class ToolDelegate(QtWidgets.QStyledItemDelegate):
     """Two-line tool rows, painted (hundreds of rows stay fast on the Pi)"""
+
+    units = "mm"  # the modal's display units
 
     def sizeHint(self, option, index):
         return QtCore.QSize(10, 78)
@@ -77,7 +90,8 @@ class ToolDelegate(QtWidgets.QStyledItemDelegate):
         p.drawText(QtCore.QRectF(text_left, r.top() + 10, width, 26), Qt.AlignLeft | Qt.AlignVCenter, title)
         p.setPen(QtGui.QColor(C.text_3))
         p.setFont(theme.font(T.label))
-        facts = [f"⌀ {tool.diameter_label}", f"{tool.flutes} fl", f"cut {fmt_len(tool.flute_length, tool.unit)}",
+        facts = [f"⌀ {fmt_diameter(tool.diameter, self.units)}", f"{tool.flutes} fl",
+                 f"cut {fmt_len(tool.flute_length, self.units)}",
                  tool.type, f"{tool.vendor} {tool.product_id}".strip()]
         line = p.fontMetrics().elidedText("  ·  ".join(facts), Qt.ElideRight, int(width))
         p.drawText(QtCore.QRectF(text_left, r.top() + 40, width, 24), Qt.AlignLeft | Qt.AlignVCenter, line)
@@ -87,9 +101,10 @@ class ToolDelegate(QtWidgets.QStyledItemDelegate):
 class ToolDetail(QtWidgets.QFrame):
     add_clicked = QtCore.pyqtSignal(object)
 
-    def __init__(self, machine, parent=None):
+    def __init__(self, machine, units="mm", parent=None):
         super().__init__(parent)
         self.machine = machine
+        self.units = units  # the modal's display units, not the machine's
         self.setObjectName("card")
         self.setStyleSheet(f"#card {{ background: {C.card_hi}; border-radius: 18px; }}")
         self.layout_ = QtWidgets.QVBoxLayout(self)
@@ -113,12 +128,13 @@ class ToolDetail(QtWidgets.QFrame):
         grid = QtWidgets.QGridLayout()
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(6)
-        facts = [("Diameter", tool.diameter_label), ("Flutes", str(tool.flutes)),
-                 ("Flute length", fmt_len(tool.flute_length, tool.unit)),
-                 ("Overall length", fmt_len(tool.overall_length, tool.unit)),
-                 ("Shank", fmt_len(tool.shank_diameter, tool.unit)), ("Type", tool.type)]
+        u = self.units
+        facts = [("Diameter", fmt_diameter(tool.diameter, u)), ("Flutes", str(tool.flutes)),
+                 ("Flute length", fmt_len(tool.flute_length, u)),
+                 ("Overall length", fmt_len(tool.overall_length, u)),
+                 ("Shank", fmt_len(tool.shank_diameter, u)), ("Type", tool.type)]
         if tool.corner_radius:
-            facts.append(("Corner radius", fmt_len(tool.corner_radius, tool.unit)))
+            facts.append(("Corner radius", fmt_len(tool.corner_radius, u)))
         if tool.point_angle:
             facts.append(("Point angle", f"{tool.point_angle:g}°"))
         if tool.taper_angle:
@@ -144,7 +160,7 @@ class ToolDetail(QtWidgets.QFrame):
             table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
             table.verticalHeader().setDefaultSectionSize(48)
             table.horizontalHeader().setStretchLastSection(True)
-            k, u = (1.0, "mm") if m.metric else (1 / ft.IN, "in")
+            k, u = (1.0, "mm") if self.units == "mm" else (1 / ft.IN, "in")
             for preset in tool.presets:
                 s = ft.scale_preset(preset, tool.flutes, m.spindle_min, m.spindle_max)
                 row = table.rowCount()
@@ -183,6 +199,12 @@ class ToolLibrary(kit.Popover):
         self.source = None
         self.kind = None
         self.tools: List[ft.FusionTool] = []
+        saved = shell.prefs.get(FILTER_PREFS) or {}
+        # Display units for this modal only (many catalogs are in inches); the machine's by default
+        self.units = saved.get("units") if saved.get("units") in ("mm", "in") else \
+            ("mm" if self.machine.machine_metric else "in")
+        self.active = tf.from_json(saved.get("filters"))
+        self.sort_index = int(saved.get("sort", 0)) if 0 <= int(saved.get("sort", 0)) < len(tf.SORTS) else 0
 
         self.add(kit.label("Vendor catalogs from Fusion 360 (.json or .tools). Add a tool to the machine and Milo "
                            "plans with its real geometry and cutting data.", "muted", wrap=True))
@@ -192,6 +214,11 @@ class ToolLibrary(kit.Popover):
         self.sources.setSpacing(8)
         top.addLayout(self.sources)
         top.addStretch(1)
+        top.addWidget(kit.label("Show sizes in", "muted"))
+        self.units_toggle = kit.Segmented(["mm", "inch"], min_width=90)
+        self.units_toggle.set_index(0 if self.units == "mm" else 1)
+        self.units_toggle.selected.connect(lambda i: self.set_units("mm" if i == 0 else "in"))
+        top.addWidget(self.units_toggle)
         top.addWidget(kit.Button("Import…", icon="download-simple", on_click=self._import))
         self.add(top)
 
@@ -207,17 +234,37 @@ class ToolLibrary(kit.Popover):
         filters.addWidget(self.types)
         self.add(filters)
 
+        # More filters: a chip each, tap for the choices (with how many tools each leaves)
+        chips = QtWidgets.QHBoxLayout()
+        chips.setSpacing(8)
+        self.filter_chips = {}
+        for spec in tf.FILTERS:
+            chip = kit.Chip(spec.title, icon=spec.icon)
+            chip.clicked.connect(lambda _=False, k=spec.key: self._filter_menu(k))
+            self.filter_chips[spec.key] = chip
+            chips.addWidget(chip)
+        chips.addStretch(1)
+        self.sort_chip = kit.Chip("", icon="sort-ascending")
+        self.sort_chip.clicked.connect(self._sort_menu)
+        chips.addWidget(self.sort_chip)
+        self.clear_button = kit.Button("Clear filters", icon="x", variant="ghost", size="sm",
+                                       on_click=self.clear_filters)
+        chips.addWidget(self.clear_button)
+        self.add(chips)
+
         body = QtWidgets.QHBoxLayout()
         body.setSpacing(18)
         self.list = QtWidgets.QListWidget()
-        self.list.setItemDelegate(ToolDelegate(self.list))
+        self.delegate = ToolDelegate(self.list)
+        self.delegate.units = self.units
+        self.list.setItemDelegate(self.delegate)
         self.list.setStyleSheet("QListWidget { background: transparent; border: none; }")
         self.list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
         self.list.setUniformItemSizes(True)
         QtWidgets.QScroller.grabGesture(self.list.viewport(), QtWidgets.QScroller.LeftMouseButtonGesture)
         self.list.currentItemChanged.connect(lambda item, _: self.detail.show_tool(item.data(TOOL_ROLE) if item else None))
         body.addWidget(self.list, 4)
-        self.detail = ToolDetail(self.machine)
+        self.detail = ToolDetail(self.machine, self.units)
         self.detail.add_clicked.connect(self._add)
         body.addWidget(self.detail, 5)
         holder = QtWidgets.QWidget()
@@ -255,10 +302,10 @@ class ToolLibrary(kit.Popover):
         self.source = source
         self._load()
 
-    def _filter(self):
+    def _base_tools(self) -> List[ft.FusionTool]:
+        """The tools passing the library, type and search: what the extra filters work on"""
         words = self.search.text().lower().replace("\"", " in").split()
-        self.list.clear()
-        shown = 0
+        result = []
         for tool in self.tools:
             if self.source and tool.source != self.source:
                 continue
@@ -271,6 +318,15 @@ class ToolLibrary(kit.Popover):
                                  f"{tool.diameter / ft.IN:.4g}in")).lower()
             if any(w not in haystack for w in words):
                 continue
+            result.append(tool)
+        return result
+
+    def _filter(self):
+        self.list.clear()
+        self._refresh_chips()
+        shown = 0
+        filtered = tf.apply(self._base_tools(), self.active)
+        for tool in tf.sort(filtered, tf.SORTS[self.sort_index][1]):
             item = QtWidgets.QListWidgetItem()
             item.setData(TOOL_ROLE, tool)
             self.list.addItem(item)
@@ -282,11 +338,93 @@ class ToolLibrary(kit.Popover):
             self.count.setText("No libraries yet. Tap Import… to add Fusion 360 tool files from the Desktop, "
                                "Downloads or a USB stick.")
         else:
-            self.count.setText(f"Showing {shown} of {total} tools" + (" (refine the search to see more)" if shown >= 400 else ""))
+            matching = f"{len(filtered)} match" if len(filtered) > shown else ""
+            self.count.setText(f"Showing {shown} of {total} tools" + (f" ({matching}; refine to see more)"
+                                                                       if matching else ""))
         if self.list.count():
             self.list.setCurrentRow(0)
         else:
             self.detail.show_tool(None)
+
+    # --- the extra filters ----------------------------------------------------------------------
+
+    def _refresh_chips(self):
+        for key, chip in self.filter_chips.items():
+            value = self.active.get(key)
+            chip.setText(tf.describe(key, value, self.units))
+            theme.set_prop(chip, "tone", "accent" if value is not None else "")
+            chip.setIcon(theme.icon(tf.BY_KEY[key].icon, color=C.accent_hi if value is not None else C.text_2))
+        name = tf.SORTS[self.sort_index][0]
+        self.sort_chip.setText("Sort" if self.sort_index == 0 else f"Sort: {name.lower()}")
+        theme.set_prop(self.sort_chip, "tone", "accent" if self.sort_index else "")
+        self.clear_button.setVisible(bool(self.active) or self.sort_index != 0)
+
+    def _remember(self):
+        self.shell.prefs.set(FILTER_PREFS, {"filters": tf.to_json(self.active), "sort": self.sort_index,
+                                            "units": self.units})
+
+    def set_units(self, units):
+        """mm or in for this modal's sizes and filters (the filters keep working: they're kept in mm)"""
+        self.units = units
+        self.units_toggle.set_index(0 if units == "mm" else 1)
+        self.delegate.units = units
+        self.detail.units = units
+        self._remember()
+        self._refresh_chips()
+        self.list.viewport().update()
+        self.detail.show_tool(self.detail.tool)
+
+    def set_filter(self, key, value):
+        if value is None:
+            self.active.pop(key, None)
+        else:
+            self.active[key] = value
+        self._remember()
+        self._filter()
+
+    def clear_filters(self):
+        self.active = {}
+        self.sort_index = 0
+        self._remember()
+        self._filter()
+
+    def _filter_menu(self, key):
+        """The choices for one filter, each with how many tools it would leave with the others"""
+        spec = tf.BY_KEY[key]
+        base = tf.apply(self._base_tools(), self.active, skip=key)
+        actions = [("x-circle", f"Any ({len(base)})", lambda: self.set_filter(key, None))]
+        choices = tf.options(key, self.tools, self.units)
+        for option in choices:
+            count = sum(1 for t in base if tf.matches(t, key, option.value))
+            if count == 0 and spec.kind == "values":
+                continue  # a shank or material none of the current tools has
+            current = self.active.get(key) == option.value
+            actions.append(("check" if current else spec.icon, f"{option.label} ({count})",
+                            lambda v=option.value: self.set_filter(key, v), "primary" if current else None))
+        if spec.kind in ("range", "min"):
+            actions.append(("pencil-simple", "Type a value…" if spec.kind == "min" else "Type a range…",
+                            lambda: self._custom(key)))
+        actions = [a if a[-1] is not None else a[:3] for a in actions]
+        kit.ActionSheet(self, spec.title, actions, subtitle="Counts include your other filters and the search.",
+                        width=520).show_at(self.filter_chips[key], "below")
+
+    def _custom(self, key):
+        spec, u = tf.BY_KEY[key], self.units
+        if spec.kind == "min":
+            kit.NumPad(self, f"{spec.title}: at least", lambda v: self.set_filter(key, tf.custom_range(v, None, u)[0]),
+                       units=u, hint="Tools that reach at least this deep.").show_centered()
+            return
+
+        def got_low(low):
+            kit.NumPad(self, f"{spec.title}: up to", lambda high: self.set_filter(key, tf.custom_range(low, high, u)),
+                       units=u, hint="0 for no upper limit.").show_centered()
+        kit.NumPad(self, f"{spec.title}: from", got_low, units=u, hint="0 for no lower limit.").show_centered()
+
+    def _sort_menu(self):
+        actions = [("check" if i == self.sort_index else "sort-ascending", name,
+                    lambda i=i: (setattr(self, "sort_index", i), self._remember(), self._filter()))
+                   for i, (name, _) in enumerate(tf.SORTS)]
+        kit.ActionSheet(self, "Sort tools", actions, width=420).show_at(self.sort_chip, "below")
 
     # --- actions ----------------------------------------------------------------------------------
 
