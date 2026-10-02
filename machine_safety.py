@@ -156,6 +156,15 @@ def check_program_ready(stat) -> Optional[str]:
     return None
 
 
+# The touch probe's tool number (set by the Probe page): the spindle must never start with it in
+PROBE_TOOL: Optional[int] = None
+
+
+def set_probe_tool(number: Optional[int]):
+    global PROBE_TOOL
+    PROBE_TOOL = int(number) if number else None
+
+
 def validate_mdi(command: str, stat) -> Optional[str]:
     """
     Validate an MDI line against the allowlist, machine state and soft limits.
@@ -212,6 +221,9 @@ def validate_mdi(command: str, stat) -> Optional[str]:
     for axis in seen_axes:
         if not stat.axis_mask & (1 << AXIS_LETTERS.index(axis)):
             return f"This machine has no {axis} axis."
+
+    if m_codes & {3, 4} and PROBE_TOOL and stat.tool_in_spindle == PROBE_TOOL:
+        return f"The touch probe (T{PROBE_TOOL}) is in the spindle; the spindle won't start with it."
 
     max_rpm = spindle_max_rpm(stat)
     for letter, value in words:
@@ -339,6 +351,19 @@ def work_position(stat, position) -> Optional[List[float]]:
         rel[0] = x * math.cos(t) - y * math.sin(t)
         rel[1] = x * math.sin(t) + y * math.cos(t)
     return [rel[i] - g92[i] for i in range(n)]
+
+
+def stored_work_rotation(stat, name: str) -> Optional[float]:
+    """The XY rotation (degrees) stored for a work system, or None if unknown"""
+    code = next((c for c, n in WORK_OFFSETS.items() if n == name), None)
+    if code is None:
+        return None
+    if offsets_synced(stat) and active_work_offset(stat) == name:
+        return stat.rotation_xy
+    params = _file_parameters(stat)
+    if params is None:
+        return None
+    return params.get(5201 + 20 * WCS_NUMBERS[code] + 9, 0.0)
 
 
 def stored_work_offset(stat, name: str) -> Optional[List[float]]:

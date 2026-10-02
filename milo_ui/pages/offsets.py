@@ -105,6 +105,8 @@ class OffsetsPage(Page):
         wcs.add(self.wcs_buttons)
         wcs.add(kit.label("Positions, zeroing and programs use the active system. Milo sees it too.", "muted",
                           wrap=True))
+        self.undo_button = kit.Button("Undo", icon="arrow-counter-clockwise", variant="outline", on_click=self._undo)
+        wcs.add(self.undo_button)
         left.addWidget(wcs)
 
         self.table = offset_table if offset_table is not None else SimOffsetTable(m)
@@ -123,12 +125,17 @@ class OffsetsPage(Page):
         self.fixtures_card.body.addStretch(1)
         row.addWidget(self.fixtures_card, 2)
 
-        m.changed.connect(lambda t: t in ("offsets", "state") and self.refresh())
+        m.changed.connect(lambda t: t in ("offsets", "state", "offset_history") and self.refresh())
         self.refresh()
         self.refresh_fixtures()
 
     def refresh(self):
         m = self.machine
+        history = m.offset_history
+        self.undo_button.setVisible(bool(history))
+        if history:
+            entry = history[-1]
+            self.undo_button.setText(f"Undo last change: {entry['label']} ({entry['wcs']})")
         if m.wcs in WCS_NAMES[:6]:
             self.wcs_buttons.set_index(WCS_NAMES.index(m.wcs))
         self.wcs_buttons.setEnabled(m.on and not m.is_running)
@@ -182,17 +189,17 @@ class OffsetsPage(Page):
         x, y, z = (float(data.get(a, 0.0)) for a in ("x", "y", "z"))
 
         def go():
-            # Fixtures are stored in machine units; G10 reads the current program units
-            m = self.machine
-            units, restore = ("G21", "G20") if m.machine_metric else ("G20", "G21")
-            lines = [units, f"G10 L2 P1 X{x:.6f} Y{y:.6f} Z{z:.6f}"]
-            if m.metric != m.machine_metric:
-                lines.append(restore)
-            if m.mdi_lines(lines):
-                self.shell.toaster.show(f"Loaded “{name}” into G54.", "success")
+            # Fixtures are stored in machine units, like apply_offsets takes them
+            if self.machine.apply_offsets("G54", {"X": x, "Y": y, "Z": z}, label=f"Load fixture {name}"):
+                self.shell.toaster.show(f"Loaded “{name}” into G54. Undo puts the old G54 back.", "success")
         kit.ActionSheet(self, f"Use “{name}”?", [("check", "Load into G54", go, "primary"),
                                                          ("x", "Cancel", lambda: None)],
                         subtitle=f"G54 becomes X {x:.3f}  Y {y:.3f}  Z {z:.3f}").show_centered()
+
+    def _undo(self):
+        entry = self.machine.undo_offsets()
+        if entry:
+            self.shell.toaster.show(f"Undid “{entry['label']}”: {entry['wcs']} is back as it was.", "success")
 
     def _delete(self, name):
         def go():

@@ -75,9 +75,16 @@ MOVE_ACTIONS = {
     "go_work_zero": ("Go to Work Zero", "target", True),
     "go_abs_home": ("Go to ABS Home", "house-simple", True),
     "go_g54": ("Go to G54", "map-pin", True),
+    "probe_menu": ("Probe…", "target", False),
 }
 MOVE_ITEMS = list(MOVE_ACTIONS)
-SUBMENUS = {"zero"}  # items that open another ring instead of running
+# Picking one sets up the Probe page and asks for confirmation (dead-man + confirm to start)
+PROBE_ACTIONS = {
+    "probe_corner": ("Corner", "frame-corners"), "probe_edge": ("Edge", "align-left"),
+    "probe_hole": ("Hole centre", "circle-dashed"), "probe_boss": ("Boss centre", "circle"),
+    "probe_surface": ("Top surface", "arrow-line-down"), "probe_angle": ("Part angle", "compass"),
+}
+SUBMENUS = {"zero", "probe_menu"}  # items that open another ring instead of running
 
 
 def zero_items(axes) -> List[str]:
@@ -107,6 +114,8 @@ def radial_entry(item: str, machine) -> tuple:
         return (f"Zero {item[5:].upper()}", "crosshair-simple", True)
     if item in MOVE_ACTIONS:
         return MOVE_ACTIONS[item]
+    if item in PROBE_ACTIONS:
+        return PROBE_ACTIONS[item] + (False,)
     return RADIAL_ACTIONS[item]
 
 
@@ -616,6 +625,8 @@ class Pendant(QtCore.QObject):
         """Run a ring's item, or open its submenu (Zero -> each axis)"""
         if item in SUBMENUS:
             self._menu_parents.append((self._menu, self.menu_title))
+            if item == "probe_menu":
+                return self.open_menu(list(PROBE_ACTIONS), "Probe what?")
             return self.open_menu(zero_items(self.machine.axes), "Zero which axis?")
         self.close_menu()
         self.quick_action.emit(item)

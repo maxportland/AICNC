@@ -532,7 +532,8 @@ def _press(pendant, **state):
 def test_right_stick_click_opens_the_zero_and_go_to_menu(qapp):
     pendant, run, hints, _ = _moves_pendant()
     _press(pendant, buttons={"RS"})
-    assert pendant.menu_open and pendant.menu_items == ["home_all", "zero", "go_work_zero", "go_abs_home", "go_g54"]
+    assert pendant.menu_open and pendant.menu_items == ["home_all", "zero", "go_work_zero", "go_abs_home", "go_g54",
+                                                    "probe_menu"]
     assert pendant.menu_title == "Zero & go to"
     _press(pendant, LX=0.6, LY=-0.8)  # lower right: Go to Work Zero
     _press(pendant, buttons={"A"}, LX=0.6, LY=-0.8)

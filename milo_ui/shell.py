@@ -440,6 +440,10 @@ class MiloShell(QtWidgets.QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.machine = machine
         self.prefs = prefs or Prefs()
+        # Work offset undo history survives a restart (the offsets themselves are in linuxcnc.var)
+        machine.offset_history = list(self.prefs.get("offset_history") or [])
+        machine.changed.connect(lambda topic: topic == "offset_history"
+                                and self.prefs.set("offset_history", machine.offset_history))
         self.engine = None
         self.conversation = None
         self.pages: Dict[str, Page] = {}
@@ -648,6 +652,8 @@ class MiloShell(QtWidgets.QWidget):
                 "current_text": f"Now {m.feed_override:.0f}% of the programmed feed"})
         if item == "talk":
             return self._voice()
+        if item.startswith("probe_"):
+            return self._probe_from_pendant(item[6:])
         if item == "power":
             if m.on:
                 m.set_power(False)
@@ -680,8 +686,9 @@ class MiloShell(QtWidgets.QWidget):
             if m.is_running:
                 return say("Not while a program is running.", "warning")
             axes = list(m.axes) if item == "zero_all" else [item[5:].upper()]
+            m.remember_offsets("Zero " + ("all" if len(axes) > 1 else axes[0]))  # one undo for all of them
             for axis in axes:
-                m.set_axis_origin(axis, 0.0)
+                m.set_axis_origin(axis, 0.0, remember=False)
             say(f"{' '.join(axes)} zeroed in {m.wcs}.", "success")
         elif item in ("go_work_zero", "go_abs_home", "go_g54"):
             if not m.ready:
@@ -704,6 +711,19 @@ class MiloShell(QtWidgets.QWidget):
                 return say(m.state_detail or "The machine isn't ready.", "warning")
             m.mdi(f"G53 G0 Z{m.limits['Z'][1]:.4f}")
             say("Raising Z to the top.", "info")
+
+    def _probe_from_pendant(self, goal):
+        """Set up probing on the Probe page, then ask for confirmation (dead-man + confirm runs it)"""
+        page = self.pages.get("probe")
+        if page is None:
+            return
+        action, reason = page.prepare({"goal": goal})
+        if action is None:
+            return self.toaster.show(reason, "warning")
+        gate = getattr(self.engine, "confirmation", None)
+        if gate is None:
+            return self.toaster.show("Set up on the Probe page: tap Start probing.", "info")
+        gate.propose(action)
 
     def show_settings_tab(self, name):
         self.navigate("settings")
@@ -732,6 +752,8 @@ class MiloShell(QtWidgets.QWidget):
     def attach_engine(self, engine):
         """Connect a MiloEngine (already constructed with self.bridge as its listener)"""
         self.engine = engine
+        if "probe" in self.pages and hasattr(engine, "probe_handler"):
+            engine.probe_handler = self.pages["probe"]
         self.composer.set_ai_available(bool(engine.api_key()))
         if self.conversation is not None:
             self.conversation.set_show_details(engine.show_details)
@@ -781,6 +803,16 @@ class MiloShell(QtWidgets.QWidget):
             return self.toaster.show("Load a program first.", "warning")
         if not m.ready:
             return self.toaster.show(m.state_detail or "The machine isn't ready.", "warning")
+        if m.probe_in_spindle:
+            from probe_jobs import spins_before_tool_change
+            try:
+                with open(m.file, errors="ignore") as f:
+                    spins = spins_before_tool_change(f.read())
+            except OSError:
+                spins = True
+            if spins:
+                return self.toaster.show(f"The touch probe (T{m.probe_tool}) is in the spindle and this program starts "
+                                         "the spindle before changing tools. Load the cutting tool first.", "warning")
         m.run(self.pages["program"].start_line() if "program" in self.pages else 0)
 
     # --- machine messages & keyboard --------------------------------------------------------

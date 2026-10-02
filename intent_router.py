@@ -12,6 +12,7 @@ decides what the user wants:
 - "estop_reset": the user asked to release the E-stop (always refused)
 - "program":  generate a G-code program via the CAM IR pipeline
 - "adjust_feeds": re-feed the loaded program for a material (feeds_adjust rewrites it)
+- "probe":    find a corner, edge, hole/boss centre, top or angle with the touch probe (the Probe page)
 - "question": answer a question, no machine action
 - "unclear":  ask the user a clarifying question
 
@@ -36,17 +37,22 @@ except ImportError:
 from ai_config import DEFAULT_COOLANT, job_model, job_options
 
 INTENTS = ("mdi", "circle", "home", "run", "power_on", "power_off", "estop_reset", "program", "adjust_feeds",
-           "question", "unclear")
+           "probe", "question", "unclear")
+PROBE_GOALS = ("corner", "edge", "hole", "boss", "surface", "angle")
 
 SYSTEM_PROMPT = (
     "You are Milo, the assistant built into a LinuxCNC milling machine control.\n"
     "Decide what the user wants and reply with a single JSON object, nothing else:\n"
     "{\n"
     '  "intent": "mdi" | "circle" | "home" | "run" | "power_on" | "power_off" | "estop_reset" | "program" |'
-    ' "adjust_feeds" | "question" | "unclear",\n'
+    ' "adjust_feeds" | "probe" | "question" | "unclear",\n'
     '  "circle": {"diameter": <number>, "direction": "cw" | "ccw", "feed": <number or null>},  // only for intent circle\n'
     '  "mdi": "<one line of G-code>",   // only for intent mdi\n'
     '  "material": "<workpiece material>",   // only for intent adjust_feeds\n'
+    '  "probe": {"goal": "corner" | "edge" | "hole" | "boss" | "surface" | "angle", "corner": "front_left" |'
+    ' "front_right" | "back_left" | "back_right" | null, "inside": <true for a pocket\'s corner>, "edge": "left" |'
+    ' "right" | "front" | "back" | null, "shape": "round" | "rectangle" | null, "diameter": <number or null>,'
+    ' "width": <number or null>, "length": <number or null>, "wcs": "G54".."G59" or null},  // only for intent probe\n'
     '  "summary": "<short plain-English description of the action>",  // for mdi and home\n'
     '  "answer": "<short reply to the user>"   // for question and unclear\n'
     "}\n"
@@ -63,6 +69,12 @@ SYSTEM_PROMPT = (
     "- power_on: turn the machine on / power up / enable the machine ('machine on', 'turn it on').\n"
     "- power_off: turn the machine off / power down / disable the machine ('machine off', 'shut it off').\n"
     "- estop_reset: release, reset or clear the emergency stop (E-stop). Anything about the E-stop itself is this intent.\n"
+    "- probe: find something with the touch probe and set the work offset from it: a corner ('find the front left\n"
+    "  corner', 'probe the back right corner of the pocket' -> inside true), an edge ('touch off the left edge'), the\n"
+    "  centre of a hole or pocket (goal hole) or of a boss/round stock (goal boss), the top surface (goal surface,\n"
+    "  'probe Z', 'find the top'), or how square a part sits (goal angle, with the edge). Front = toward the\n"
+    "  operator (-Y), left = -X. Fill only what the user said; diameter/width/length roughly, in active units.\n"
+    "  Measuring a tool's length on the tool setter is not this (answer as a question: use Measure tool on the Probe page).\n"
     "- run: the user explicitly asks to run / start / cycle-start the program that is already loaded\n"
     "  ('run the program', 'run current program', 'cycle start'). Not for creating a new program.\n"
     "- program: the user wants something MACHINED or a program/toolpath created or changed: facing, pocketing,\n"
@@ -177,6 +189,25 @@ class IntentRouter:
         return self._normalize(data, content)
 
     @staticmethod
+    def _probe(value) -> dict:
+        """The probe request, with only recognised values"""
+        value = value if isinstance(value, dict) else {}
+        goal = str(value.get("goal") or "").strip().lower()
+        request = {"goal": goal if goal in PROBE_GOALS else ""}
+        for key in ("corner", "edge", "shape", "wcs"):
+            if value.get(key):
+                request[key] = str(value[key]).strip()
+        if value.get("inside") is not None:
+            request["inside"] = bool(value["inside"])
+        for key in ("diameter", "width", "length"):
+            try:
+                if value.get(key) is not None:
+                    request[key] = float(value[key])
+            except (TypeError, ValueError):
+                pass
+        return request
+
+    @staticmethod
     def _normalize(data: dict, raw: str) -> dict:
         """Coerce the model reply into a well-formed result"""
         intent = str(data.get("intent", "")).strip().lower()
@@ -200,6 +231,7 @@ class IntentRouter:
             "summary": str(data.get("summary") or "").strip(),
             "answer": str(data.get("answer") or "").strip(),
             "material": str(data.get("material") or "").strip(),
+            "probe": IntentRouter._probe(data.get("probe")),
             "raw": raw,
         }
         if result["intent"] == "mdi" and not result["mdi"]:
@@ -210,6 +242,10 @@ class IntentRouter:
         if result["intent"] == "adjust_feeds" and not result["material"]:
             result["intent"] = "unclear"
             result["answer"] = result["answer"] or "What material are you cutting?"
+        if result["intent"] == "probe" and not result["probe"].get("goal"):
+            result["intent"] = "unclear"
+            result["answer"] = result["answer"] or ("What should I find: a corner, an edge, a hole or boss centre, "
+                                                    "the top, or a part's angle?")
         if result["intent"] == "unclear" and not result["answer"]:
             result["answer"] = "Sorry, I didn't understand that. Could you rephrase?"
         return result

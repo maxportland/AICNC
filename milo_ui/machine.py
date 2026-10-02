@@ -110,6 +110,9 @@ class MachineModel(QtCore.QObject):
         self.wcs_offsets: Dict[str, List[float]] = {}
         # False when the work position can't be worked out (the DRO then says so)
         self.work_offset_known = True
+        # Work offset changes made from the screen, newest last: {time, label, wcs, offset, rotation}
+        self.offset_history: List[dict] = []
+        self.probe_tool: Optional[int] = None  # the touch probe's tool number (the spindle won't start with it)
 
         self.file = ""
         self.line = 0
@@ -237,7 +240,7 @@ class MachineModel(QtCore.QObject):
     def pendant_stop(self): raise NotImplementedError
     def set_jog_rate(self, rate: float): raise NotImplementedError
     def set_jog_increment(self, value: float, text: str): raise NotImplementedError
-    def set_axis_origin(self, axis: str, value: float): raise NotImplementedError
+    def set_axis_origin(self, axis: str, value: float, remember: bool = True): raise NotImplementedError
     def mdi(self, command: str) -> bool: raise NotImplementedError
     def run(self, line: int = 0): raise NotImplementedError
     def pause_resume(self): raise NotImplementedError
@@ -255,6 +258,68 @@ class MachineModel(QtCore.QObject):
     def open_program(self, path: str): raise NotImplementedError
     def set_wcs(self, name: str): raise NotImplementedError
     def reload_tool_table(self): raise NotImplementedError
+    def current_offset(self, wcs: str) -> Optional[Tuple[List[float], float]]: raise NotImplementedError
+
+    # --- the probe in the spindle ---------------------------------------------------------
+
+    @property
+    def probe_in_spindle(self) -> bool:
+        return bool(self.probe_tool) and self.tool == self.probe_tool
+
+    def spindle_locked(self, command: str = "M3") -> bool:
+        """True (with a warning) if this would start the spindle with the touch probe in it"""
+        from probe_jobs import starts_spindle
+        if self.probe_in_spindle and starts_spindle(command):
+            self.message.emit("warning", f"The touch probe (T{self.probe_tool}) is in the spindle: it won't start. "
+                                         "Load a cutting tool first.")
+            return True
+        return False
+
+    # --- work offset history (undo) ---------------------------------------------------------
+
+    MAX_OFFSET_HISTORY = 20
+
+    def remember_offsets(self, label: str, wcs: Optional[str] = None) -> bool:
+        """Note a work system's offset before changing it, so it can be undone"""
+        wcs = wcs or self.wcs
+        current = self.current_offset(wcs)
+        if current is None:
+            return False
+        offset, rotation = current
+        self.offset_history.append({"time": time.time(), "label": label, "wcs": wcs,
+                                    "offset": [float(v) for v in offset[:3]], "rotation": float(rotation)})
+        del self.offset_history[:-self.MAX_OFFSET_HISTORY]
+        self.changed.emit("offset_history")
+        return True
+
+    def apply_offsets(self, wcs: str, values: Dict[str, float], rotation: Optional[float] = None,
+                      label: Optional[str] = None) -> bool:
+        """Set a work system's X/Y/Z origin (machine units) and/or rotation, remembering the old ones"""
+        if label and not self.remember_offsets(label, wcs):
+            self.message.emit("warning", f"Couldn't read {wcs} to keep an undo copy, so it wasn't changed.")
+            return False
+        words = " ".join(f"{axis}{value:.6f}" for axis, value in values.items())
+        if rotation is not None:
+            words += f" R{rotation:.6f}"
+        number = WCS_NAMES.index(wcs) + 1
+        # G10 reads the program's units; offsets are in machine units
+        units, restore = ("G21", "G20") if self.machine_metric else ("G20", "G21")
+        lines = [units, f"G10 L2 P{number} {words}"]
+        if self.metric != self.machine_metric:
+            lines.append(restore)
+        return self.mdi_lines(lines)
+
+    def undo_offsets(self) -> Optional[dict]:
+        """Put back the work offset from before the last change; returns that history entry"""
+        if not self.offset_history:
+            return None
+        entry = self.offset_history[-1]
+        values = dict(zip("XYZ", entry["offset"]))
+        if not self.apply_offsets(entry["wcs"], values, entry.get("rotation")):
+            return None
+        self.offset_history.pop()
+        self.changed.emit("offset_history")
+        return entry
 
     # Composite commands shared by both implementations
 
@@ -274,6 +339,8 @@ class MachineModel(QtCore.QObject):
         """Several MDI lines as one command: checked once, then queued in order (LinuxCNC
         queues MDI commands, so they run one after the other)"""
         lines = [line.strip() for line in lines if line.strip()]
+        if any(self.spindle_locked(line) for line in lines):
+            return False
         if not lines or not self.mdi(lines[0]):
             return False
         for line in lines[1:]:
@@ -330,6 +397,8 @@ class MachineModel(QtCore.QObject):
     def run_macro(self, index: int):
         """Run one of the INI's [MDI_COMMAND_LIST] entries"""
         if 0 <= index < len(self.mdi_commands):
+            if self.spindle_locked(self.mdi_commands[index][1]):
+                return False
             return self.mdi_lines(self.mdi_commands[index][1].split(";"))
         return False
 
@@ -666,10 +735,22 @@ class QtvcpMachine(MachineModel):
     def set_jog_increment(self, value, text):
         self.ACTION.SET_JOG_INCR(float(value), text)
 
-    def set_axis_origin(self, axis, value):
+    def set_axis_origin(self, axis, value, remember=True):
+        if remember:
+            self.remember_offsets(f"{'Zero' if float(value) == 0 else 'Set'} {axis}"
+                                  + ("" if float(value) == 0 else f" to {float(value):g}"))
         self.ACTION.SET_AXIS_ORIGIN(axis, float(value))
 
+    def current_offset(self, wcs):
+        stat = self.STATUS.stat
+        offset = machine_safety.stored_work_offset(stat, wcs)
+        if offset is None:
+            return None
+        return list(offset[:3]), machine_safety.stored_work_rotation(stat, wcs) or 0.0
+
     def mdi(self, command):
+        if self.spindle_locked(command):
+            return False
         if self.estop or not self.on:
             self.message.emit("warning", "Turn the machine on first")
             return False
@@ -701,6 +782,8 @@ class QtvcpMachine(MachineModel):
         self.ACTION.ABORT()
 
     def spindle_start(self, direction, rpm):
+        if self.spindle_locked():
+            return
         if self.mode != "manual" and self.interp == "idle":
             self.ACTION.SET_MANUAL_MODE()
         rpm = max(self.spindle_min, min(self.spindle_max, float(rpm)))
@@ -746,6 +829,8 @@ class QtvcpMachine(MachineModel):
 
     def run_macro(self, index):
         # The same checks as a typed MDI line
+        if 0 <= index < len(self.mdi_commands) and self.spindle_locked(self.mdi_commands[index][1]):
+            return False
         if self.estop or not self.on:
             self.message.emit("warning", "Turn the machine on first")
             return False
@@ -813,6 +898,7 @@ class SimMachine(MachineModel):
         self.jog_rate_max = 1800.0
         self.wcs_offsets = {name: [0.0, 0.0, 0.0] for name in WCS_NAMES}
         self.wcs_offsets["G54"] = [94.675, 84.35, -112.8375]
+        self.wcs_rotation: Dict[str, float] = {}
         self.pos_abs = [212.5, 96.35, -64.2]
         self._update_rel()
         self.mdi_commands = [("Go to G54", "G0 Z0;X0 Y0"), ("Center machine", "G53 G0 Z-10;G53 G0 X250 Y87.5"),
@@ -973,14 +1059,22 @@ class SimMachine(MachineModel):
         self.jog_increment = float(value)
         self._emit("jog")
 
-    def set_axis_origin(self, axis, value):
+    def set_axis_origin(self, axis, value, remember=True):
+        if remember:
+            self.remember_offsets(f"{'Zero' if float(value) == 0 else 'Set'} {axis}")
         i = self.axis_index(axis)
         self.wcs_offsets[self.wcs][i] = self.pos_abs[i] - float(value)
         self._update_rel()
         self.position_changed.emit()
         self._emit("offsets")
 
+    def current_offset(self, wcs):
+        offset = self.wcs_offsets.get(wcs)
+        return (list(offset[:3]), self.wcs_rotation.get(wcs, 0.0)) if offset is not None else None
+
     def mdi(self, command):
+        if self.spindle_locked(command):
+            return False
         if not self.on:
             self.message.emit("warning", "Turn the machine on first")
             return False
@@ -993,8 +1087,20 @@ class SimMachine(MachineModel):
         self.message.emit("info", f"MDI: {line}")
 
     def _simulate(self, line):
-        """Pretend-move for G53 rapids (camera scans and moves in previews and tests)"""
+        """Pretend-move for G53 rapids (camera scans and moves in previews and tests), and G10 L2
+        work offset changes"""
         words = line.upper().split()
+        if words[:2] == ["G10", "L2"] and len(words) > 2 and words[2].startswith("P"):
+            name = WCS_NAMES[int(float(words[2][1:])) - 1]
+            for w in words[3:]:
+                if w[0] in "XYZ":
+                    self.wcs_offsets[name]["XYZ".index(w[0])] = float(w[1:])
+                elif w[0] == "R":
+                    self.wcs_rotation[name] = float(w[1:])
+            self._update_rel()
+            self.position_changed.emit()
+            self._emit("offsets")
+            return
         if "G53" in words and "G0" in words:
             target = [None, None, None]
             for w in words:
@@ -1027,6 +1133,8 @@ class SimMachine(MachineModel):
             self._emit("state", "program")
 
     def spindle_start(self, direction, rpm):
+        if self.spindle_locked():
+            return
         if not self.on:
             return self.message.emit("warning", "Turn the machine on first")
         self.spindle_dir = 1 if direction >= 0 else -1

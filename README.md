@@ -110,8 +110,23 @@ number pad, nothing relies on hover, and scrolling is by drag. Fonts (Inter, Jet
   a selected line, optional stop, and the Facing / Hole-circle generators.
 - **Tools**: the tool in the spindle, change tool (M6), set tool (M61), measure length on the tool setter,
   apply G43, the power drawbar, the tool table, and the Fusion 360 **Tool library** (below).
-- **Offsets**: the active work system (G54-G59), the offset table, and saved fixtures (`fixtures.json`).
-- **Probe**: qtvcp's probing routines, plus the tool setter and touch plate with their parameters.
+- **Offsets**: the active work system (G54-G59), the offset table, saved fixtures (`fixtures.json`), and
+  **Undo** for the last work offset change.
+- **Probe**: start from what you want to find: a **corner** (outside or inside), an **edge**, the centre of a
+  **hole** or **boss**, the **top surface**, a part's **angle**, or **tool length** (tool setter, touch plate).
+  Tap the corner or edge on a picture, and the page says where to put the probe and draws exactly what it
+  will do (where it goes down, which way it searches and how far, where it should touch). It won't start
+  until the probe is in the spindle, has been tapped once to show it works, and the moves fit the soft
+  limits. The result is shown in plain words ("Corner found at X 12.345 Y 8.210; setting G54 X0 Y0 here
+  moves its origin X +0.42") with **Set** and **Probe again**; every work offset change (probing, zeroing,
+  fixtures) can be **undone**. *Probe twice and compare* flags a loose part; a hole or boss far from the size
+  you gave, or a result far from where the camera saw the part, is flagged too. With a camera scan the
+  preview shows the real part: tap its corner, and **Take me there** moves the probe over the start point.
+  Milo can do it by voice ("find the centre of this hole") and the pendant from its right-stick menu
+  (Probe…); both go through the usual confirmation. **Probe setup** holds the probe's tool number, tip,
+  speeds and distances, and calibrates the tip on a ring gauge. The spindle won't start with the probe in.
+  The routines are qtvcp's, run by `milo_probe_subprog.py` with probe-protected (G38.3) descents beside the
+  part; qtvcp's own probe screen is still there under **Advanced**.
 - **Vision**: the camera on the head (see [VISION_HARDWARE.md](VISION_HARDWARE.md) for the shopping list
   and setup). Scan the table to find parts, see them on a stitched map, and create a probe program
   that measures the chosen part and sets G54. Milo knows what the scan found, and its moves are
@@ -411,7 +426,8 @@ STEPGEN_MAXACCEL = 250.00
   and `milo_ui/widgets.py` (position readout, jog pad, spindle, overrides, cycle controls, toolpath stage).
 - **Pages**: `milo_ui/pages/`, one file per page; `milo_ui/shell.py` is the frame around them.
 - **Machine access**: pages only use `milo_ui/machine.py` (`QtvcpMachine` on the machine, `SimMachine` in previews).
-- Screen preferences (on-screen keyboard, probe parameters) are kept in `~/.linuxcnc/milo_ui.json`.
+- Screen preferences (on-screen keyboard, probe setup, the work offset undo history) are kept in
+  `~/.linuxcnc/milo_ui.json`.
 
 ## Usage
 

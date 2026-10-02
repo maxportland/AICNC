@@ -158,10 +158,7 @@ class VisionPage(Page):
         self.probe_button = kit.Button("Create probe program", icon="target", variant="primary", size="lg",
                                        on_click=self._make_probe_program)
         self.parts_card.add(self.probe_button)
-        self.parts_card.add(ParamRow("Probe tool", lambda: float(shell.prefs.get("vision.probe_tool", 99)),
-                                     lambda v: shell.prefs.set("vision.probe_tool", int(v)), ""))
-        self.parts_card.add(ParamRow("Probe tip diameter", lambda: float(shell.prefs.get("vision.probe_tip", 2.0)),
-                                     lambda v: shell.prefs.set("vision.probe_tip", float(v)), "mm"))
+        self.parts_card.add(kit.label("Probe tool and tip: Probe page → Probe setup.", "muted"))
         side.addWidget(self.parts_card)
         side.addStretch(1)
         holder = QtWidgets.QWidget()
@@ -403,8 +400,9 @@ class VisionPage(Page):
             return
         part = r.parts[min(self.selected, len(r.parts) - 1)]
         prefs = self.shell.prefs
-        settings = ProbeSettings(probe_tool=int(prefs.get("vision.probe_tool", 99)),
-                                 tip_diameter=float(prefs.get("vision.probe_tip", 2.0)))
+        from probe_jobs import ProbeSetup
+        probe = ProbeSetup.from_prefs(prefs)  # the same probe the Probe page uses
+        settings = ProbeSettings(probe_tool=int(probe.tool), tip_diameter=float(probe.tip_diameter))
         origin = "corner" if self.origin.index() == 0 else "center"
         try:
             text = probe_program(part.center, part.size, part.angle, part.top_z, settings, origin,

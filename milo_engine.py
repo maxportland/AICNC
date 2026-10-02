@@ -172,6 +172,8 @@ class MiloEngine:
 
         self.intent_router = None
         self.router_worker = None
+        # The Probe page: prepare(request) -> (action, reason) and execute(action) -> log line
+        self.probe_handler = None
         self.router_history = []
         self.routing_request = None
         self.confirmation = None
@@ -453,6 +455,8 @@ class MiloEngine:
             self.confirmation.propose(action)
             if from_voice:
                 self._listen_for_reply()
+        elif intent == "probe":
+            self._propose_probe(result["probe"], from_voice)
         elif intent == "estop_reset":
             self.log(f"[MILO] {ESTOP_RESET_ANSWER}")
         else:
@@ -548,8 +552,24 @@ class MiloEngine:
         self._stop_listening_for_reply()
         self.listener.on_proposal(None)
 
+    def _propose_probe(self, request, from_voice=False):
+        """'Find the centre of this hole': the Probe page sets it up, then it's confirmed like any action"""
+        if self.probe_handler is None:
+            return self.log("[MILO] Probing is only available on the machine's screen.")
+        action, reason = self.probe_handler.prepare(request or {})
+        if action is None:
+            self.log(f"[MILO] {reason}")
+            return
+        self.confirmation.propose(action)
+        if from_voice:
+            self._listen_for_reply()
+
     def _execute_confirmed_action(self, action):
         """Run a confirmed machine action, re-checking it against the current machine state"""
+        if action.get("kind") == "probe":
+            if self.probe_handler is None:
+                return self.log("[ERROR] Probing is not available.")
+            return self.log(self.probe_handler.execute(action))
         if not self.action:
             return self.log("[ERROR] Action API not available. Cannot run machine commands.")
         try:

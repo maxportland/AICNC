@@ -403,3 +403,32 @@ def QPushButtonText(pill):
     """What the pill actually shows"""
     from PyQt5.QtWidgets import QPushButton
     return QPushButton.text(pill)
+
+
+def test_fit_texts_widens_designer_layouts_made_for_a_smaller_font(qapp):
+    """qtvcp's probe widget: 100 px labels and a 90 px column of CLEAR buttons cut off their text"""
+    from PyQt5 import QtWidgets
+    from milo_ui import theme
+    from milo_ui.pages.probe import PROBE_WIDGET_QSS, fit_texts
+    theme.apply(qapp)
+    root = QtWidgets.QWidget()
+    grid = QtWidgets.QGridLayout(root)
+    labels = []
+    for row, text in enumerate(["PROBE DIA", "XY CLEARANCE"]):
+        label = QtWidgets.QLabel(text)
+        label.setFixedWidth(40)
+        grid.addWidget(label, row, 0)
+        labels.append(label)
+    column = QtWidgets.QWidget()
+    column.setMaximumWidth(30)
+    QtWidgets.QVBoxLayout(column).addWidget(QtWidgets.QPushButton("CLEAR ALL"))
+    grid.addWidget(column, 0, 1)
+    root.setStyleSheet(PROBE_WIDGET_QSS)
+    fit_texts(root)
+    root.show()
+    qapp.processEvents()
+    for label in labels:
+        assert label.width() >= label.fontMetrics().horizontalAdvance(label.text())
+    assert labels[0].width() == labels[1].width()  # still lined up
+    button = column.findChild(QtWidgets.QPushButton)
+    assert button.width() >= button.sizeHint().width() and column.maximumWidth() >= button.sizeHint().width()

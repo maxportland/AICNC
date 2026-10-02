@@ -245,7 +245,8 @@ class ConfirmSheet(QtWidgets.QFrame):
         command = action.get("command") or ""
         self.code.setText(command)
         self.code.setVisible(bool(command))
-        verb = {"power_on": "Turn on", "power_off": "Turn off", "run": "Run", "home": "Home"}.get(action.get("kind"))
+        verb = {"power_on": "Turn on", "power_off": "Turn off", "run": "Run", "home": "Home",
+                "probe": "Probe"}.get(action.get("kind"))
         self.confirm_button.setText(verb or "Confirm")
         self.confirm_button.set_variant("go" if action.get("kind") == "run" else "warn")
         self._tick()
