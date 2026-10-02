@@ -57,7 +57,6 @@ ACTIONS = {
 # The quick (radial) menu: id -> (label, icon, needs the dead-man held to run). Starting things
 # needs the dead-man; stopping things and opening pages don't.
 RADIAL_ACTIONS = {
-    "home_all": ("Home all", "house-line", True),
     "spindle": ("Spindle start / stop", "arrow-clockwise", True),  # shown as the one that applies (radial_entry)
     "mist": ("Mist on / off", "drop", True),
     "probe": ("Probe", "target", False),
@@ -69,11 +68,12 @@ RADIAL_ACTIONS = {
     "power": ("Power on / off", "power", True),
 }
 # The second menu (right stick click): zeroing and going to fixed places. Not configurable.
-# Moving and zeroing need the dead-man; opening the Zero submenu doesn't.
+# Moving, homing and zeroing need the dead-man; opening the Zero submenu doesn't.
 MOVE_ACTIONS = {
+    "home_all": ("Home all", "house-line", True),
     "zero": ("Zero", "crosshair", False),
     "go_work_zero": ("Go to Work Zero", "target", True),
-    "go_abs_home": ("Go to ABS Home", "house-line", True),
+    "go_abs_home": ("Go to ABS Home", "house-simple", True),
     "go_g54": ("Go to G54", "map-pin", True),
 }
 MOVE_ITEMS = list(MOVE_ACTIONS)
@@ -147,7 +147,7 @@ DEFAULTS = {
                 "step_y_plus": "DPAD_UP", "step_z_minus": "A", "step_z_plus": "Y",
                 "step_smaller": "LB", "step_larger": "RB", "stop": "B", "talk": "X", "confirm": "X",
                 "radial": "LS", "radial2": "RS"},
-    "radial_items": ["home_all", "spindle", "mist", "probe", "set_spindle", "set_feed", "set_jog", "power"],
+    "radial_items": ["spindle", "mist", "probe", "set_spindle", "set_feed", "set_jog", "power"],
     "radial_rpm": 0.0,  # "Start spindle" speed; 0 = the machine's default speed
     "radial_known": [],  # quick-menu items the user has had the chance to see (see merged_config)
 }
@@ -168,6 +168,8 @@ def merged_config(saved: Optional[dict]) -> dict:
     known = _renamed(known)
     config["radial_items"] = _renamed(config["radial_items"]) + [
         item for item in DEFAULTS["radial_items"] if item not in known and item not in config["radial_items"]]
+    # Items that left the quick menu (Home all moved to the zero & go-to menu) drop out
+    config["radial_items"] = [item for item in config["radial_items"] if item in RADIAL_ACTIONS]
     config["radial_known"] = list(RADIAL_ACTIONS)
     return config
 

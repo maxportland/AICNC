@@ -255,7 +255,7 @@ def test_left_stick_click_opens_the_menu(qapp):
     from milo_ui.pendant import Pendant
     machine = FakeMachine()
     from milo_ui.pendant import RADIAL_ACTIONS
-    six = ["home_all", "probe", "spindle", "mist", "talk", "power"]
+    six = ["mist", "probe", "spindle", "talk", "set_jog", "power"]
     machine.spindle_dir = 1  # running: the spindle slot is Stop spindle
     pendant = Pendant(machine, FakePrefs(pendant={"enabled": True, "radial_items": six,
                                                   "radial_known": list(RADIAL_ACTIONS)}), reader_factory=FakeReader)
@@ -269,12 +269,12 @@ def test_left_stick_click_opens_the_menu(qapp):
     pendant.state = _state(buttons={"LS"}, last_event=now())
     pendant.tick()
     assert opened == [True] and pendant.menu_open and machine.calls[-1] == ("stop",)
-    pendant.state = _state(buttons={"LS"}, LY=1.0, last_event=now())  # up: Home all (still holding LS)
+    pendant.state = _state(buttons={"LS"}, LY=1.0, last_event=now())  # up: Mist on (still holding LS)
     pendant.tick()
     assert pendant.menu_index == 0 and run == []
     pendant.state = _state(buttons={"A"}, LY=1.0, last_event=now())  # A without the dead-man
     pendant.tick()
-    assert run == [] and hints == ["Hold RT to run Home all"] and pendant.menu_open
+    assert run == [] and hints == ["Hold RT to run Mist on"] and pendant.menu_open
     pendant.state = _state(LX=1.0, LY=-0.6, last_event=now())  # down-right: Stop spindle (no dead-man needed)
     pendant.tick()
     pendant.state = _state(buttons={"A"}, LX=1.0, LY=-0.6, last_event=now())
@@ -309,7 +309,7 @@ def test_quick_menu_overlay_opens_and_taps(shell):
     p = shell.pendant
     p.config["enabled"] = True
     p.open_menu()
-    assert shell.quick_menu.isVisible() and len(shell.quick_menu.items) == 8
+    assert shell.quick_menu.isVisible() and len(shell.quick_menu.items) == 7
     ran = []
     shell.run_quick_action = ran.append
     centre = shell.quick_menu.rect().center()
@@ -369,7 +369,7 @@ def test_new_quick_menu_items_appear_once_for_existing_settings():
     from milo_ui.pendant import merged_config
     old = {"radial_items": ["home_all", "probe"]}  # saved before the slider items existed
     config = merged_config(old)
-    assert config["radial_items"] == ["home_all", "probe", "set_spindle", "set_feed", "set_jog", "power"]
+    assert config["radial_items"] == ["probe", "set_spindle", "set_feed", "set_jog", "power"]
     config["radial_items"].remove("set_feed")  # the user turns one off...
     again = merged_config(config)
     assert "set_feed" not in again["radial_items"]  # ...and it stays off
@@ -413,7 +413,7 @@ def test_a_newer_item_is_added_for_settings_saved_with_the_previous_menu():
     previous = ["home_all", "spindle_on", "spindle_off", "mist_on", "mist_off", "probe", "z_top", "talk",
                 "set_spindle", "set_feed"]
     config = merged_config({"radial_items": ["home_all", "set_feed"], "radial_known": previous})
-    assert config["radial_items"] == ["home_all", "set_feed", "set_jog", "power"]
+    assert config["radial_items"] == ["set_feed", "set_jog", "power"]
 
 
 def test_power_item_shows_what_it_would_do():
@@ -431,7 +431,7 @@ def test_power_from_the_quick_menu(shell):
     shell.run_quick_action("power")
     assert not m.on  # E-stop: refused
     m.set_estop(False)
-    shell.pendant.config["radial_items"] = ["home_all", "power"]
+    shell.pendant.config["radial_items"] = ["probe", "power"]
     shell.pendant.open_menu()
     assert shell.quick_menu.items[1] == ("Power on", "power")
     shell.run_quick_action("power")
@@ -494,11 +494,11 @@ def test_quick_menu_relabels_spindle_and_mist_while_open(shell):
 @pytest.mark.parametrize("saved,expected", [
     # Both halves on: one slot where the first was
     (["home_all", "spindle_on", "spindle_off", "mist_on", "mist_off", "probe"],
-     ["home_all", "spindle", "mist", "probe"]),
+     ["spindle", "mist", "probe"]),
     # Either half on keeps the toggle
-    (["mist_off", "home_all", "spindle_on"], ["mist", "home_all", "spindle"]),
+    (["mist_off", "home_all", "spindle_on"], ["mist", "spindle"]),
     # Both halves off stays off
-    (["home_all", "probe"], ["home_all", "probe"]),
+    (["home_all", "probe"], ["probe"]),
 ])
 def test_split_spindle_and_mist_items_are_merged(saved, expected):
     from milo_ui.pendant import RADIAL_ACTIONS, merged_config
@@ -532,13 +532,13 @@ def _press(pendant, **state):
 def test_right_stick_click_opens_the_zero_and_go_to_menu(qapp):
     pendant, run, hints, _ = _moves_pendant()
     _press(pendant, buttons={"RS"})
-    assert pendant.menu_open and pendant.menu_items == ["zero", "go_work_zero", "go_abs_home", "go_g54"]
+    assert pendant.menu_open and pendant.menu_items == ["home_all", "zero", "go_work_zero", "go_abs_home", "go_g54"]
     assert pendant.menu_title == "Zero & go to"
-    _press(pendant, LX=1.0)  # right: Go to Work Zero
-    _press(pendant, buttons={"A"}, LX=1.0)
+    _press(pendant, LX=0.6, LY=-0.8)  # lower right: Go to Work Zero
+    _press(pendant, buttons={"A"}, LX=0.6, LY=-0.8)
     assert run == [] and hints == ["Hold RT to run Go to Work Zero"]  # moving needs the dead-man
-    _press(pendant, LX=1.0, rt=1.0)  # let go of A, hold the dead-man, press A again
-    _press(pendant, buttons={"A"}, LX=1.0, rt=1.0)
+    _press(pendant, LX=0.6, LY=-0.8, rt=1.0)  # let go of A, hold the dead-man, press A again
+    _press(pendant, buttons={"A"}, LX=0.6, LY=-0.8, rt=1.0)
     assert run == ["go_work_zero"] and not pendant.menu_open
     pendant.shutdown()
 
@@ -546,14 +546,14 @@ def test_right_stick_click_opens_the_zero_and_go_to_menu(qapp):
 def test_zero_opens_an_axis_ring_and_b_goes_back(qapp):
     pendant, run, hints, opened = _moves_pendant()
     _press(pendant, buttons={"RS"})
-    _press(pendant, LY=1.0)  # up: Zero
-    _press(pendant, buttons={"A"}, LY=1.0)  # opening the submenu needs no dead-man
+    _press(pendant, LX=0.95, LY=0.31)  # upper right: Zero
+    _press(pendant, buttons={"A"}, LX=0.95, LY=0.31)  # opening the submenu needs no dead-man
     assert pendant.menu_items == ["zero_x", "zero_y", "zero_z", "zero_all"] and pendant.in_submenu
     assert run == []
     _press(pendant, buttons={"B"})
-    assert pendant.menu_open and pendant.menu_items[0] == "zero" and not pendant.in_submenu  # back, not closed
-    _press(pendant, LY=1.0)
-    _press(pendant, buttons={"A"}, LY=1.0)
+    assert pendant.menu_open and "zero" in pendant.menu_items and not pendant.in_submenu  # back, not closed
+    _press(pendant, LX=0.95, LY=0.31)
+    _press(pendant, buttons={"A"}, LX=0.95, LY=0.31)
     _press(pendant, LX=-1.0)  # left: All
     _press(pendant, buttons={"A"}, LX=-1.0)
     assert run == [] and hints[-1] == "Hold RT to run Zero all"
@@ -614,3 +614,18 @@ def test_tapping_zero_on_the_screen_opens_the_axis_ring(shell):
     assert "B goes back" in shell.quick_menu.default_hint
     p.close_menu()
     assert not shell.quick_menu.isVisible()
+
+
+def test_home_all_lives_in_the_zero_and_go_to_menu(qapp):
+    from milo_ui.pendant import MOVE_ITEMS, RADIAL_ACTIONS, radial_entry
+    assert MOVE_ITEMS[0] == "home_all" and "home_all" not in RADIAL_ACTIONS  # not in the quick menu or its settings
+    assert radial_entry("home_all", FakeMachine()) == ("Home all", "house-line", True)  # needs the dead-man
+    pendant, run, hints, _ = _moves_pendant()
+    _press(pendant, buttons={"RS"})
+    _press(pendant, LY=1.0)  # up: Home all
+    _press(pendant, buttons={"A"}, LY=1.0)
+    assert run == [] and hints == ["Hold RT to run Home all"]
+    _press(pendant, LY=1.0, rt=1.0)
+    _press(pendant, buttons={"A"}, LY=1.0, rt=1.0)
+    assert run == ["home_all"]
+    pendant.shutdown()
