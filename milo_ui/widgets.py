@@ -137,7 +137,12 @@ class DRO(kit.Card):
             secondary = m.pos_abs[i] if work else m.pos_rel[i]
             row.set_values(primary, secondary, m.pos_dtg[i], m.homed.get(axis, False), m.metric, m.is_running)
         self.title_label.setText(f"POSITION · {m.wcs}" if work else "POSITION · MACHINE")
-        self.footer.setText(f"Tap an axis to zero it, set it or home it · {m.units}")
+        if m.work_offset_known:
+            self.footer.setStyleSheet("")
+            self.footer.setText(f"Tap an axis to zero it, set it or home it · {m.units}")
+        else:
+            self.footer.setStyleSheet(f"color: {C.amber};")
+            self.footer.setText(f"{m.wcs} offset unknown: work position shows machine coordinates")
 
     def _axis_menu(self, axis):
         m = self.machine
@@ -156,10 +161,13 @@ class DRO(kit.Card):
         actions = [
             ("crosshair", f"Zero {axis} here", lambda: m.set_axis_origin(axis, 0.0), "primary"),
             ("pencil-simple", f"Set {axis} to a value…", set_value),
-            # read the position when tapped: the pendant may have moved the axis since
-            ("arrows-in", f"Halve {axis} (find center)", lambda: m.set_axis_origin(axis, m.pos_rel[i] / 2.0)),
             ("house-line", f"Home {axis}", lambda: m.home_axis(axis)),
         ]
+        if m.work_offset_known:
+            # Halving needs the real work position (Zero and Set are worked out by LinuxCNC).
+            # Read the position when tapped: the pendant may have moved the axis since
+            actions.insert(2, ("arrows-in", f"Halve {axis} (find center)",
+                               lambda: m.set_axis_origin(axis, m.pos_rel[i] / 2.0)))
         if m.ready:
             actions.append(("arrow-right", f"Move to {axis}0", lambda: self._go_zero(axis)))
         kit.ActionSheet(self, f"{axis} axis", actions,

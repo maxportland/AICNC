@@ -1077,13 +1077,17 @@ class Toaster(QtCore.QObject):
         toast.adjustSize()
         toast.show()
         self.toasts.insert(0, toast)
-        del self.toasts[4:]  # keep a short stack; older ones are closed below
-        for old in list(toast.parent().findChildren(QtWidgets.QFrame, "toast")):
-            if old not in self.toasts:
-                old.deleteLater()
+        # Keep a short stack. Only close our own toasts: Milo's peek shares the "toast" style name
+        for old in self.toasts[4:]:
+            old.deleteLater()
+        del self.toasts[4:]
         self._relayout()
         timeout = seconds if seconds is not None else (10 if level == "error" else 5)
-        QtCore.QTimer.singleShot(int(timeout * 1000), lambda: self.dismiss(toast))
+        # The timer belongs to the toast, so it goes away with it (and with the screen)
+        timer = QtCore.QTimer(toast)
+        timer.setSingleShot(True)
+        timer.timeout.connect(lambda: self.dismiss(toast))
+        timer.start(int(timeout * 1000))
 
     def dismiss(self, toast):
         if toast in self.toasts:

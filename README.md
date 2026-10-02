@@ -166,7 +166,7 @@ offscreen, so this works over SSH, and nothing talks to LinuxCNC.
 
 ## CNC AI Assistant
 
-The CNC AI Assistant is a powerful feature that allows you to generate G-code using natural language descriptions. It uses OpenAI's GPT-4o model to understand your machining requirements and generate appropriate toolpaths.
+The CNC AI Assistant is a powerful feature that allows you to generate G-code using natural language descriptions. It uses OpenAI models (set in `ai_config.py`, currently `gpt-5.6-sol`) to understand your machining requirements and generate appropriate toolpaths.
 
 ### Key Features
 
@@ -194,7 +194,7 @@ The assistant generates **CAM IR (Intermediate Representation)** JSON, which is 
 - **Thread**: Threading operations
 
 #### Intent Routing and Machine Actions
-Every request, typed or spoken, first goes to a fast model (`gpt-4o-mini`) that decides what you want:
+Every request, typed or spoken, first goes to a model with low reasoning effort (`ROUTER_MODEL` in `ai_config.py`) that decides what you want:
 - **Immediate action** ("move X ten millimeters", "spindle on at 12000", "go to X 10 Y 20"): the G-code line is
   checked against an allowlist, machine state (E-stop, power, idle, homed) and soft limits, then shown for
   confirmation. Say or type "yes", or press **Confirm**, to run it; "no" or **Cancel** aborts. Unconfirmed
@@ -208,6 +208,9 @@ Every request, typed or spoken, first goes to a fast model (`gpt-4o-mini`) that 
 - **Program** ("face the stock 100 by 50, 1 mm deep"): generates CAM IR and G-code, which is loaded for review, never started.
   Programs must use tools from `tool.tbl` (its diameters override the AI's) and stay within the spindle
   maximum from `[SPINDLE_0]`; a rejected program is sent back to the AI once with the errors to fix.
+  Every program is then checked: its cut is simulated (operations that remove no material, rapid moves
+  through material) and a vision model compares a top view of the result with the request. Problems go
+  back to the AI for one fix round; the program card shows the simulated result and anything still wrong.
   Output goes to `~/linuxcnc/nc_files/ai/`, keeping the newest 50.
 - **Question** ("what tool is loaded?"): answered in the conversation.
 - **Unclear** ("move Y"): Milo asks a clarifying question instead of guessing.
@@ -217,7 +220,8 @@ Every request, typed or spoken, first goes to a fast model (`gpt-4o-mini`) that 
 - **Tap to talk**: tap the orb in the dock (or the big orb on the empty conversation); tap again to stop
 - **Live feedback**: the orb and a small level meter follow your voice; "Cancel" discards the recording
 - **Auto-stop**: after 2 s of silence, or the recording timeout (default 20 s)
-- **Transcription**: OpenAI Whisper
+- **Spoken replies** (Settings → Voice, off by default): Milo reads answers and questions aloud with OpenAI text to speech, and waits until it has finished before listening for a reply
+- **Transcription**: OpenAI `gpt-transcribe` (`TRANSCRIPTION_MODEL` in `ai_config.py`)
 
 ### Usage
 

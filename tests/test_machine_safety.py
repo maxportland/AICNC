@@ -172,3 +172,45 @@ def test_describe_machine_uses_file_offsets(unsynced_stat):
     text = describe_machine(unsynced_stat)
     assert "G54 origin is at machine X230.000 Y8.486 Z-147.907" in text
     assert "Work position: X-220.0000" in text
+
+
+def test_offsets_synced_follows_g5x_index(stat, unsynced_stat):
+    from machine_safety import offsets_synced
+    assert offsets_synced(stat)
+    assert not offsets_synced(unsynced_stat)
+
+
+def test_work_position_uses_file_offsets_until_synced(unsynced_stat):
+    """The DRO's work position at startup: machine X480 is G54 X250, not X480"""
+    from machine_safety import work_position
+    work = work_position(unsynced_stat, [480.0, 8.4858, -147.907333] + [0.0] * 6)
+    assert work[:3] == pytest.approx([250.0, 0.0, 0.0])
+
+
+def test_work_position_matches_linuxcnc_math(stat):
+    """Minus G5x and tool offset, rotated by the XY rotation, minus G92 (as hal_glib does)"""
+    from machine_safety import work_position
+    stat.g5x_offset = [10.0, 20.0, -100.0] + [0.0] * 6
+    stat.tool_offset = [0.0, 0.0, 25.0] + [0.0] * 6
+    stat.g92_offset = [1.0, 2.0, 3.0] + [0.0] * 6
+    stat.rotation_xy = 90.0
+    work = work_position(stat, [20.0, 20.0, -50.0] + [0.0] * 6)
+    # (10, 0) rotated by -90 degrees is (0, -10)
+    assert work[:3] == pytest.approx([-1.0, -12.0, 22.0])
+
+
+def test_work_position_unknown_without_offsets(stat):
+    from machine_safety import work_position
+    stat.g5x_index = 0  # unsynced and no parameter file
+    assert work_position(stat, [0.0] * 9) is None
+
+
+def test_stored_work_offset(stat, unsynced_stat):
+    from machine_safety import stored_work_offset
+    # Before sync the status says zero; the file has the real G54
+    assert stored_work_offset(unsynced_stat, "G54")[:3] == pytest.approx([230.0, 8.4858, -147.907333])
+    assert stored_work_offset(unsynced_stat, "G55")[:3] == [0.0, 0.0, 0.0]
+    # Once synced, the active system comes from the status
+    assert stored_work_offset(stat, "G54")[:3] == [10.0, 10.0, -100.0]
+    assert stored_work_offset(stat, "G55") is None  # inactive and no parameter file
+    assert stored_work_offset(stat, "G99") is None

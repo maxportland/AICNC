@@ -93,6 +93,13 @@ def shell(qapp, tmp_path, monkeypatch):
     shell.show()
     yield shell
     shell.close()
+    # Delete the screen now, in Qt's order, instead of leaving it to Python's garbage collector
+    # at exit (which destroys Qt objects in no particular order and can crash)
+    shell.pendant.shutdown()
+    shell.deleteLater()
+    machine.deleteLater()  # its timer would keep signalling the deleted screen
+    from PyQt5.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def test_every_page_fits_the_screen(shell):
@@ -110,9 +117,59 @@ def test_every_page_fits_the_screen(shell):
 
 def test_stage_shows_only_where_wanted(shell):
     shell.navigate("home")
+    assert not shell.stage.isVisibleTo(shell)
+    shell.navigate("program")
     assert shell.stage.isVisibleTo(shell)
     shell.navigate("tools")
     assert not shell.stage.isVisibleTo(shell)
+
+
+def test_toolpath_page_gives_the_stage_the_whole_area(shell):
+    from PyQt5.QtWidgets import QApplication
+    assert list(shell.pages)[:3] == ["home", "toolpath", "jog"]
+    shell.navigate("toolpath")
+    QApplication.processEvents()
+    assert shell.stage.isVisibleTo(shell) and not shell.stack.isVisibleTo(shell)
+    assert shell.stage.width() > 1500
+    shell.navigate("program")
+    QApplication.processEvents()
+    assert shell.stack.isVisibleTo(shell) and shell.stage.width() == 600
+
+
+def test_tool_table_says_why_it_is_locked(shell):
+    m = shell.machine
+    page = shell.pages["tools"]
+    shell.navigate("tools")
+    m.set_estop(True)
+    assert page.lock.isVisibleTo(shell) and "E-stop" in page.lock_reason.text()
+    m.set_estop(False)
+    assert "turn the machine on" in page.lock_reason.text()
+    m.set_power(True)
+    m.unhome_all()
+    assert "home the machine" in page.lock_reason.text()
+    assert not page.hint.isVisibleTo(shell)
+    for axis in m.axes:
+        m.home_axis(axis)
+    assert not page.lock.isVisibleTo(shell)
+    assert page.hint.isVisibleTo(shell)
+    m.home_required = False
+    m.unhome_all()
+    assert not page.lock.isVisibleTo(shell)
+
+
+def test_toasts_leave_milos_peek_alone(shell):
+    shell.navigate("jog")
+    shell.bridge.on_message("[MILO] Spindle is at 2400 rpm.")
+    for i in range(6):
+        shell.toaster.show(f"note {i}")
+    from PyQt5.QtWidgets import QApplication, QFrame
+    from PyQt5.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    QApplication.processEvents()
+    assert shell.peek.isVisible()
+    assert len([t for t in shell.findChildren(QFrame, "toast") if t is not shell.peek]) == 4
+    shell.navigate("home")
+    assert not shell.peek.isVisible()
 
 
 def test_suggestion_chip_asks_milo(shell):
@@ -208,3 +265,141 @@ def test_tool_library_adds_a_tool_to_the_machine(shell, tmp_path, monkeypatch):
     assert "Acme A-1" in page.current.catalog.text()
     # the real tool table is untouched: previews edit a copy
     assert m.tool_table_path.startswith(os.path.join(os.sep, "tmp")) or "milo-sim-" in m.tool_table_path
+
+
+def test_compact_conversation_hides_the_suggestion_chips(shell):
+    home = shell.pages["home"]
+    shell.navigate("home")
+    assert home.suggestions.isVisibleTo(shell)
+    shell.conversation.set_style("compact")
+    assert not home.suggestions.isVisibleTo(shell)
+    shell.conversation.set_style("bubbles")
+    assert home.suggestions.isVisibleTo(shell)
+
+
+def test_settings_tabs_switch_and_are_remembered(shell):
+    page = shell.pages["settings"]
+    shell.navigate("settings")
+    assert page.tab_names == ["Milo", "Screen", "Voice", "Pendant", "Machine"]
+    page.tabs.buttons[2].click()
+    assert page.tab_stack.currentIndex() == 2 and page.speak.isVisibleTo(shell)
+    assert not page.key_field.isVisibleTo(shell)
+    assert shell.prefs.get("settings_tab") == "Voice"
+
+
+def test_shutdown_is_on_every_settings_tab(shell):
+    page = shell.pages["settings"]
+    shell.navigate("settings")
+    for index in range(len(page.tab_names)):
+        page.show_tab(index)
+        assert page.shutdown.isVisibleTo(shell)
+
+
+def test_pendant_tab_turns_the_pendant_on_and_off(shell, monkeypatch):
+    from milo_ui import pendant as pendant_module
+    started = []
+
+    class Reader(pendant_module.QtCore.QObject):
+        changed = pendant_module.QtCore.pyqtSignal(object)
+        name = "test pad"
+
+        def start(self):
+            started.append(True)
+
+        def stop(self):
+            started.append(False)
+    shell.pendant._reader_factory = Reader
+    shell.show_settings_tab("Pendant")
+    card = shell.pages["settings"].pendant_card
+    assert card.isVisibleTo(shell) and not shell.topbar.pendant.isVisibleTo(shell)
+    card.enable_toggle.toggle.click()
+    assert started == [True] and shell.pendant.config["enabled"]
+    assert shell.topbar.pendant.isVisibleTo(shell)
+    card.enable_toggle.toggle.click()
+    assert started == [True, False] and shell.pendant.status == "off"
+
+
+def test_settings_model_picker(shell):
+    import ai_config
+    page = shell.pages["settings"]
+    shell.navigate("settings")
+    page.on_show()
+    models = [page.model.itemData(i) for i in range(page.model.count())]
+    assert models[0] == "" and "gpt-5.5" in models  # Recommended first, then the fetched list
+    page.model.activated.emit(models.index("gpt-4o"))
+    assert shell.engine.settings["ai_model"] == "gpt-4o" and not page.quality.isEnabled()
+    page.model.activated.emit(0)
+    page.quality.buttons[2].click()
+    assert shell.engine.settings["ai_quality"] == "best" and page.quality.isEnabled()
+    stt = [page.stt_model.itemData(i) for i in range(page.stt_model.count())]
+    assert stt[0] == "" and "whisper-1" in stt
+    page.stt_model.activated.emit(stt.index("whisper-1"))
+    assert shell.engine.settings["transcription_model"] == "whisper-1"
+    ai_config.choose("", "balanced")
+
+
+def test_pendant_chip_shows_the_step_size(shell):
+    import time
+    from test_pendant import _state
+    pendant = shell.pendant
+    pendant.config["enabled"] = True
+    pendant.state = _state(last_event=time.monotonic())
+    pendant.tick()
+    assert shell.topbar.pendant.text().endswith("step 0.1 mm")
+    pendant.state = _state(buttons={"RB"}, last_event=time.monotonic())
+    pendant.tick()
+    assert shell.topbar.pendant.text().endswith("step 1 mm")
+
+
+def test_new_conversation_clears_the_transcript(shell):
+    conversation = shell.conversation
+    conversation.add_log_line("[USER] face the stock")
+    conversation.add_log_line("[MILO] Generating a program...")
+    assert conversation._rows
+    shell.engine.new_conversation()
+    assert conversation._rows == [] and conversation._history == []
+
+
+def test_a_busy_top_bar_never_widens_the_window(shell):
+    """Running, spindle on, pendant on and a long tool name made the window wider than the screen,
+    cutting off E-STOP and Stop. The long pills shorten instead; the short ones stay whole."""
+    m, bar = shell.machine, shell.topbar
+    m.tool, m.tool_comment, m.tool_diameter = 1, "Amana 51417-K 0.1875in 1FL flat end mill with a long name", 4.7625
+    bar.pendant.setText("Pendant · hold RT · step 0.01 mm")
+    bar.pendant.show()
+    m.set_estop(False)
+    m.set_power(True)
+    m.spindle_start(1, 2500)
+    m.open_program(__file__)
+    m.total_lines = 99999
+    m.run()
+    m.feed_rate, m.feed_override = 12345, 120
+    m._timer.stop()
+    bar.refresh()
+    for key in shell.pages:
+        shell.navigate(key)
+        assert shell.minimumSizeHint().width() <= 1920, key
+    shell.resize(1920, 1080)
+    from PyQt5.QtWidgets import QApplication
+    QApplication.processEvents()
+    assert bar.pendant.text() == "Pendant · hold RT · step 0.01 mm"  # the full text, whatever is shown
+    for pill in (bar.wcs, bar.spindle, bar.feed):
+        assert pill.minimumSizeHint().width() == pill.sizeHint().width()  # never shortened
+    m.abort()
+
+
+def test_info_pill_shortens_only_when_narrow(qapp):
+    from milo_ui.shell import InfoPill
+    pill = InfoPill("wrench", shrinkable=True)
+    pill.setText("T1 · Amana 51417-K 0.1875in 1FL flat end mill")
+    pill.show()  # hidden widgets get no resize events
+    pill.resize(pill.sizeHint())
+    assert QPushButtonText(pill) == pill.text()
+    pill.resize(pill.minimumSizeHint().width() + 40, pill.height())
+    assert QPushButtonText(pill).endswith("…") and pill.text().endswith("end mill")
+
+
+def QPushButtonText(pill):
+    """What the pill actually shows"""
+    from PyQt5.QtWidgets import QPushButton
+    return QPushButton.text(pill)

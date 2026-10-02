@@ -119,6 +119,7 @@ class VoiceRecordingManager:
         self.voice_worker.error.connect(self._on_voice_error)
         self.voice_worker.audio_level.connect(self._on_audio_level)
         self.voice_worker.no_speech.connect(self._on_no_speech)
+        self.voice_worker.transcribed_info.connect(self.log)
         self.voice_worker.cancelled.connect(self._on_cancelled)
         self.voice_worker.start()
 

@@ -23,8 +23,12 @@ class ScriptedEngine:
     def __init__(self, shell):
         self.shell = shell
         self.settings = {"api_key": "sk-preview", "show_details": False, "recording_timeout": 20,
-                         "silence_timeout": 2.0, "wake_word": True}
+                         "silence_timeout": 2.0, "wake_word": True,
+                         "speak_replies": False, "tts_voice": "marin", "speech_volume": 80,
+                         "speech_speed": 1.0, "speech_style": "calm", "ai_model": "", "ai_quality": "balanced",
+                         "transcription_model": ""}
         self.wake_word_ready = True
+        self.spoken = []
         self.confirmation = None
         self.asked = []
 
@@ -49,6 +53,16 @@ class ScriptedEngine:
     def cancel_listening(self):
         self.shell.bridge.on_voice_state("idle")
 
+    def fetch_models(self, callback):
+        callback({"chat": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini", "gpt-4.1", "gpt-4o"],
+                  "transcription": ["gpt-transcribe", "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"]})
+
+    def preview_voice(self):
+        self.spoken.append("sample")
+
+    def stop_speaking(self):
+        self.spoken.append("stop")
+
     def confirm(self):
         self.shell.bridge.on_proposal(None)
 
@@ -60,6 +74,15 @@ class ScriptedEngine:
 
     def reset_message_history(self):
         pass
+
+    def generate_operation(self, ir_data, title, on_done=None):
+        self.asked.append(("operation", title))
+        if on_done is not None:
+            on_done(os.path.expanduser("~/linuxcnc/nc_files/ai/preview.ngc"), None)
+        return True
+
+    def new_conversation(self):
+        self.shell.bridge.on_conversation_reset()
 
     def list_sessions(self):
         return []

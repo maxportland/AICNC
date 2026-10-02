@@ -21,17 +21,22 @@ try:
 except ImportError:
     OpenAIClient = None
 
-from workers import OpenAIWorker, IntentRouterWorker, CamWorker
-from ai_config import MAX_CAM_RETRIES, CAM_HISTORY_EXCHANGES, KEEP_RAW_RESPONSES, DEFAULT_COOLANT
+from workers import OpenAIWorker, IntentRouterWorker, CamWorker, ReviewWorker, FeedsWorker, ModelListWorker
+import ai_config
+from ai_config import (MAX_CAM_RETRIES, CAM_HISTORY_EXCHANGES, KEEP_RAW_RESPONSES, DEFAULT_COOLANT, TTS_DEFAULT_VOICE,
+                       TTS_DEFAULT_STYLE, tts_instructions,
+                       MAX_REVIEW_ROUNDS, VISUAL_REVIEW)
 from intent_router import IntentRouter
-from machine_safety import describe_machine, spindle_max_rpm, machine_units
+from machine_safety import describe_machine, spindle_max_rpm, machine_units, max_feed, program_running
 from action_controller import MACHINE_INTENTS, propose_action, execute_action
-from action_confirmation import ActionConfirmation, classify_reply, is_cancel_reply, strip_wake_phrase
-from tool_table import get_tool_table
+from action_confirmation import (ActionConfirmation, classify_reply, is_cancel_reply, is_new_conversation_request,
+                                 strip_wake_phrase)
+from tool_table import get_tool_table, describe_tools
 from fusion_tools import load_links, describe_for_prompt
 from cam_ir_processor import CAMIRProcessor
 from log_sources import append_ai_log
 from voice_recording_manager import VoiceRecordingManager
+from speaker import Speaker, speakable
 
 try:
     from wake_word_detector import WakeWordDetector
@@ -39,6 +44,8 @@ try:
 except ImportError:
     WAKE_WORD_AVAILABLE = False
     WakeWordDetector = None
+
+VOICE_SAMPLE = "Hi, I'm Milo. This is how I'll sound when I answer you."
 
 ESTOP_RESET_ANSWER = ("I can't release the E-stop. For safety that has to be done by someone at the machine. "
                       "Once it's released, I can turn the machine on for you.")
@@ -49,7 +56,7 @@ SESSION_DIR = os.path.expanduser("~/linuxcnc/gpt_sessions/")
 
 OP_NAMES = {
     "drill": "Drill", "profile_2d": "Profile", "pocket_2d": "Pocket", "face": "Face", "engrave": "Engrave",
-    "text": "Text", "bore": "Bore", "tap": "Tap", "thread": "Thread mill",
+    "text": "Text", "bore": "Bore", "tap": "Tap", "thread": "Thread", "thread_mill": "Thread mill",
 }
 
 
@@ -86,6 +93,9 @@ class EngineListener:
     def on_show_run(self):
         """A program was started"""
 
+    def on_conversation_reset(self):
+        """A new conversation started: clear the transcript"""
+
 
 def summarize_ir(ir: dict, path: str = "") -> dict:
     """The facts about a CAM IR program worth showing on its card"""
@@ -121,6 +131,7 @@ class _StatSource:
 
 class MiloEngine:
     listener = EngineListener()  # replaced in __init__; a class default keeps partial objects usable in tests
+    speaker = None  # created in start(); None means Milo stays quiet
 
     def __init__(self, listener=None, stat_getter=None, action_api=None, load_program=None,
                  config_dir=CONFIG_DIR, settings_path=SETTINGS_PATH):
@@ -143,10 +154,17 @@ class MiloEngine:
         os.makedirs(self.json_rep_dir, exist_ok=True)
 
         self.settings = {"api_key": "", "show_details": False, "recording_timeout": 20,
-                         "silence_timeout": 2.0, "wake_word": True}
+                         "silence_timeout": 2.0, "wake_word": True,
+                         "speak_replies": False, "tts_voice": TTS_DEFAULT_VOICE, "speech_volume": 80,
+                         "speech_speed": 1.0, "speech_style": TTS_DEFAULT_STYLE,
+                         "ai_model": "", "ai_quality": "balanced", "transcription_model": ""}
         self.openai_worker = None
         self.cam_worker = None
         self.cam_attempts = 0
+        self.review_worker = None
+        self.feeds_worker = None
+        self.review_rounds = 0
+        self.program_requests = []  # what the user asked for, for the visual check
         self.machine_tools = None
         self._logged_once = set()
         self.wake_word_detector = None
@@ -181,6 +199,8 @@ class MiloEngine:
         self.cam_ir_processor = CAMIRProcessor(log_callback=self.log, progress_callback=self._update_progress)
         self.voice_manager = VoiceRecordingManager(listener=self.listener, log_callback=self.log)
         self.voice_manager.set_timeouts(self.settings["recording_timeout"], self.settings["silence_timeout"])
+        self.speaker = Speaker()
+        self.speaker.failed.connect(lambda error: self._log_once(f"[WARN] Milo couldn't speak: {error}"))
         self.reset_message_history(announce=False)
         if wake_word and self.settings.get("wake_word", True):
             self._init_wake_word_detector()
@@ -196,7 +216,10 @@ class MiloEngine:
             self.wake_word_detector.stop()
         if self.voice_manager:
             self.voice_manager.stop_recording()
-        workers = [self.router_worker, self.openai_worker, self.cam_worker,
+        if self.speaker is not None:
+            self.speaker.shutdown()
+        workers = [self.router_worker, self.openai_worker, self.cam_worker, self.review_worker,
+                   getattr(self, "feeds_worker", None),
                    getattr(self.voice_manager, "voice_worker", None)]
         for worker in workers:
             # Network calls can't be interrupted; give them a few seconds to finish
@@ -221,10 +244,26 @@ class MiloEngine:
         for key in self.settings:
             if key in stored:
                 self.settings[key] = stored[key]
+        self._apply_ai_choice()
+
+    def _apply_ai_choice(self):
+        ai_config.choose(self.settings.get("ai_model") or "", self.settings.get("ai_quality") or "balanced")
+        ai_config.choose_transcription(self.settings.get("transcription_model") or "")
+
+    def fetch_models(self, callback):
+        """Call back with {"chat": [...], "transcription": [...]}, the models this key can use for
+        Milo (newest first), or None"""
+        if not self.api_key() or OpenAIClient is None:
+            return callback(None)
+        self.models_worker = ModelListWorker(self.api_key())
+        self.models_worker.finished.connect(callback)
+        self.models_worker.start()
 
     def save_settings(self, **changes):
         """Update and persist settings (the file holds the API key: readable by this user only)"""
         self.settings.update(changes)
+        if {"ai_model", "ai_quality", "transcription_model"} & set(changes):
+            self._apply_ai_choice()
         if self.voice_manager:
             self.voice_manager.set_timeouts(float(self.settings["recording_timeout"]),
                                             float(self.settings["silence_timeout"]))
@@ -258,6 +297,28 @@ class MiloEngine:
             self.listener.on_message(message)
         except Exception as e:
             print(f"[Milo] {message} (display failed: {e})")
+        if self.settings.get("speak_replies"):
+            self._say(speakable(message))
+
+    # --- speech ------------------------------------------------------------------------------
+
+    def _say(self, text):
+        if text and self.speaker is not None and self.api_key():
+            volume = max(0.0, min(1.0, float(self.settings.get("speech_volume", 80)) / 100.0))
+            speed = max(0.25, min(4.0, float(self.settings.get("speech_speed", 1.0) or 1.0)))
+            self.speaker.say(text, self.settings.get("tts_voice") or TTS_DEFAULT_VOICE, volume, self.api_key(), speed,
+                             tts_instructions(self.settings.get("speech_style")))
+
+    def preview_voice(self):
+        """The Test button in Settings: speaks even with spoken replies off"""
+        if not self.api_key():
+            return self.log("[ERROR] OpenAI API key is missing. Add it in Settings.")
+        self.stop_speaking()
+        self._say(VOICE_SAMPLE)
+
+    def stop_speaking(self):
+        if self.speaker is not None:
+            self.speaker.stop()
 
     def _log_once(self, message):
         if message not in self._logged_once:
@@ -283,6 +344,14 @@ class MiloEngine:
         text = strip_wake_phrase(text)
         if not text:
             return
+        self.stop_speaking()  # the user has moved on
+        if is_new_conversation_request(text):
+            # Handled here, not by the router: it must work even when the AI can't be reached
+            self.clear_input()
+            if self._busy_working():
+                self.log(f"[USER] {text}")
+                return self.log("[MILO] I'm still working on the previous request. Ask again when it's done.")
+            return self.new_conversation()
         if self.confirmation and self.confirmation.pending:
             reply = classify_reply(text)
             if reply is not None:
@@ -324,20 +393,23 @@ class MiloEngine:
         self.router_worker.start()
 
     def _machine_context(self):
-        """Machine state for the router, plus the catalog data of the tool in the spindle"""
+        """Machine state for the router, plus the tool table and the tools' catalog data"""
         stat = self._stat()
-        context = describe_machine(stat)
-        number = getattr(stat, "tool_in_spindle", 0) if stat is not None else 0
-        if number:
-            tool = load_links(os.path.join(self.config_dir, "tool_links.json")).get(int(number))
-            if tool is not None:
-                context += "\n" + describe_for_prompt(int(number), tool, 0, spindle_max_rpm(stat) or 0,
-                                                      machine_units(stat)).rstrip()
-                context += f"\n  T{number} description: {tool.description}"
-        vision = self._vision_context()
-        if vision:
-            context += "\n" + vision
+        return describe_machine(stat) + "\n" + self._tools_context(stat) + self._vision_suffix()
+
+    def _tools_context(self, stat):
+        """Every tool in tool.tbl, and vendor catalog data (rescaled to this spindle) for linked tools"""
+        units = machine_units(stat)
+        context = describe_tools(self.config_dir, units)
+        links = load_links(os.path.join(self.config_dir, "tool_links.json"))
+        for number, tool in sorted(links.items()):
+            context += "\n" + describe_for_prompt(int(number), tool, 0, spindle_max_rpm(stat) or 0, units).rstrip()
+            context += f"\n  T{number} description: {tool.description}"
         return context
+
+    def _vision_suffix(self):
+        vision = self._vision_context()
+        return "\n" + vision if vision else ""
 
     def _vision_context(self):
         """What the camera's last table scan found (empty if there's no camera setup)"""
@@ -366,6 +438,9 @@ class MiloEngine:
             self.log("[MILO] Generating a program...")
             self._start_program_generation(text)
             return
+        if intent == "adjust_feeds":
+            self._adjust_feeds(result["material"])
+            return
 
         self._hide_busy()
         self.clear_input()
@@ -391,8 +466,60 @@ class MiloEngine:
         self.log(f"[ERROR] {error_message}")
         self._hide_busy()
 
+    # --- speeds and feeds for the loaded program ------------------------------------------------
+
+    def _adjust_feeds(self, material):
+        """Write a copy of the loaded program with speeds and feeds for `material`, and load it"""
+        stat = self._stat()
+        path = getattr(stat, "file", "") if stat is not None else ""
+        if not path or not os.path.isfile(path):
+            self._hide_busy()
+            return self.log("[MILO] There's no program loaded to adjust. Open one first.")
+        if program_running(stat):
+            self._hide_busy()
+            return self.log("[MILO] I can't change the program while it's running.")
+        self.log(f"[MILO] Working out speeds and feeds for {material}...")
+        self._show_busy("Working out speeds and feeds…")
+        from ai_config import AI_OUTPUT_DIR
+        self.feeds_worker = FeedsWorker(
+            self.api_key(), path, material, self._tools_context(stat),
+            int(getattr(stat, "tool_in_spindle", 0) or 0), spindle_max_rpm(stat), max_feed(stat),
+            machine_units(stat), AI_OUTPUT_DIR)
+        self.feeds_worker.finished.connect(lambda result: self._on_feeds_adjusted(material, result))
+        self.feeds_worker.start()
+
+    def _on_feeds_adjusted(self, material, result):
+        self._hide_busy()
+        if result.get("error"):
+            return self.log(f"[MILO] {result['error']}")
+        units = result["units"]
+        lines, tools = [], []
+        for tool, change in sorted(result["changes"].items()):
+            parts = []
+            for key, label, unit in (("rpm", "", " rpm"), ("feed", "feed ", f" {units}/min"),
+                                     ("plunge", "plunge ", f" {units}/min")):
+                if key in change:
+                    old, new = change[key]
+                    parts.append(f"{label}{new:,.0f}{unit} (was {old:,.0f})")
+            why = result["why"].get(tool, "")
+            lines.append(f"T{tool}: " + ", ".join(parts) + (f". {why}" if why else ""))
+            tools.append({"number": tool, "diameter": None, "description": ", ".join(parts)})
+        name = os.path.basename(result["path"])
+        message = (f"Adjusted {os.path.basename(result['original'])} for {material}. It's saved as {name} and "
+                   "loaded for review; the original is unchanged.\n" + "\n".join(lines))
+        if result.get("skipped"):
+            message += "\nLeft alone (tapping or threading): " + ", ".join(f"T{t}" for t in result["skipped"]) + "."
+        if result.get("notes"):
+            message += "\n" + result["notes"]
+        self.log(f"[MILO] {message}")
+        self.load_gcode(result["path"])
+        self.listener.on_program_ready({"path": result["path"], "name": name,
+                                        "ops": [{"name": f"Speeds & feeds for {material}", "tool": None}],
+                                        "tools": tools, "stock": ""})
+
     def _busy_working(self):
-        workers = (self.router_worker, self.openai_worker, self.cam_worker)
+        workers = (self.router_worker, self.openai_worker, self.cam_worker, self.review_worker,
+                   getattr(self, "feeds_worker", None))
         return any(w is not None and w.isRunning() for w in workers)
 
     def propose_run(self):
@@ -417,6 +544,7 @@ class MiloEngine:
             self.confirmation.cancel()
 
     def _on_confirmation_resolved(self):
+        self.stop_speaking()  # e.g. Confirm tapped while Milo was still reading the question
         self._stop_listening_for_reply()
         self.listener.on_proposal(None)
 
@@ -439,6 +567,7 @@ class MiloEngine:
         if not auto:
             self._auto_listens = 0  # the user started this one
             self._listening_for_reply = False
+            self.stop_speaking()  # never record Milo's own voice
         if not self.voice_manager:
             self.log("[ERROR] Voice input is not available.")
             return
@@ -464,10 +593,19 @@ class MiloEngine:
         """
         if clarifying and self._auto_listens >= 1:
             return
+        if self.speaker is not None and self.speaker.busy:
+            # Listen once Milo has finished asking, if the question is still open by then
+            self.speaker.when_idle(lambda: self._listen_after_speaking(clarifying))
+            return
         if self.voice_manager and not self.voice_manager.is_recording_voice:
             self._auto_listens += 1
             self.toggle_voice(auto=True)
             self._listening_for_reply = True
+
+    def _listen_after_speaking(self, clarifying):
+        still_open = self._awaiting_clarification if clarifying else bool(self.confirmation and self.confirmation.pending)
+        if still_open:
+            self._listen_for_reply(clarifying)
 
     def cancel_listening(self):
         """Stop listening, discard the audio, and drop an open question"""
@@ -515,6 +653,8 @@ class MiloEngine:
     def _on_wake_word_detected(self):
         if self.voice_manager and self.voice_manager.is_busy:
             return  # already listening (e.g. for a confirmation); toggling would cut it off
+        if self.speaker is not None and self.speaker.may_have_said("milo"):
+            return  # probably Milo hearing itself; otherwise "Hey Milo" interrupts it
         self.listener.on_wake()
         self.toggle_voice()
 
@@ -572,9 +712,17 @@ class MiloEngine:
         if self.confirmation is not None and self.confirmation.pending:
             self.confirmation.cancel("New conversation")
         self.router_history = []
+        self.program_requests = []
         self.message_history = [{"role": "system", "content": self._cam_system_prompt()}]
         if announce:
             self.log("[CONTEXT] Conversation reset.")
+
+    def new_conversation(self):
+        """Forget the conversation (cancelling any pending action) and clear the transcript"""
+        self._awaiting_clarification = False
+        self.reset_message_history()
+        self.listener.on_conversation_reset()
+        self.log("[MILO] Okay, new conversation. What would you like to do?")
 
     def list_sessions(self):
         if not os.path.isdir(self.session_dir):
@@ -615,6 +763,8 @@ class MiloEngine:
         self.message_history.append({"role": "user", "content": prompt})
         self._trim_history()
         self.cam_attempts = 0
+        self.review_rounds = 0
+        self.program_requests = (getattr(self, "program_requests", []) + [prompt])[-3:]
         self.send_openai()
 
     def _trim_history(self):
@@ -669,13 +819,97 @@ class MiloEngine:
         self.cam_worker.finished.connect(self._on_cam_finished)
         self.cam_worker.start()
 
-    def _on_cam_finished(self, output_path, error):
+    def _on_cam_finished(self, output_path, error, review=None):
         if error:
             return self._on_cam_rejected(error)
+        review = review or {}
+        problems = list(review.get("problems") or [])
+        image = review.get("image")
+        if VISUAL_REVIEW and image and self.api_key() and OpenAIClient is not None:
+            self._show_busy("Checking the result…")
+            self.review_worker = ReviewWorker(self.api_key(), image, list(getattr(self, "program_requests", [])),
+                                              review.get("operations") or [])
+            self.review_worker.finished.connect(
+                lambda verdict: self._finish_review(output_path, image, problems + verdict["problems"]))
+            self.review_worker.error.connect(lambda message: (self.log(f"[WARN] {message}"),
+                                                              self._finish_review(output_path, image, problems)))
+            self.review_worker.start()
+            return
+        self._finish_review(output_path, image, problems)
+
+    def _finish_review(self, output_path, image, problems):
+        """Send what the checks found back to the CAM model once; otherwise load the program"""
+        if problems and self.review_rounds < MAX_REVIEW_ROUNDS:
+            self.review_rounds += 1
+            self.cam_attempts = 0
+            for problem in problems:
+                self.log(f"[CAM] Review: {problem}")
+            count = f"{len(problems)} problem{'s' if len(problems) != 1 else ''}"
+            self.log(f"[MILO] I checked the result and found {count}. Fixing the program…")
+            self.message_history.append({
+                "role": "user",
+                "content": "I simulated your program and checked the result. Problems:\n"
+                           + "\n".join(f"- {p}" for p in problems)
+                           + "\nFix these problems and output the complete corrected CAM IR JSON.",
+            })
+            self.send_openai()
+            return
         self.load_gcode(output_path)
         self.log("[REVIEW] G-code has been loaded. Please review the toolpath in the main preview before running.")
-        self.listener.on_program_ready(summarize_ir(self.last_ir or {}, output_path))
+        if problems:
+            self.log("[MILO] Heads up, the check still sees problems with this program: "
+                     + " ".join(problems))
+        info = summarize_ir(self.last_ir or {}, output_path)
+        info["preview"] = image
+        info["problems"] = problems
+        self.listener.on_program_ready(info)
         self._hide_busy()
+
+    def generate_operation(self, ir_data, title, on_done=None):
+        """
+        G-code for an operation set up on the Operations page: CAM IR straight to the CAM processor
+        (the same machine checks and simulation as Milo's programs, no AI), then loaded like them.
+        on_done(path, error) is called when it's finished. Returns False if it couldn't start.
+        """
+        if self._busy_working():
+            self.log("[MILO] I'm still working on the previous request. Try again when it's done.")
+            return False
+        self._load_tool_table()  # the usable tools and diameters the processor checks against
+        stat = self._stat()
+        self.log(f"[CAM] Generating {title}...")
+        self._show_busy("Generating G-code…")
+        self.cam_worker = CamWorker(
+            ir_data,
+            tools=self.machine_tools,
+            machine_units=machine_units(stat),
+            max_rpm=spindle_max_rpm(stat),
+            flute_lengths=getattr(self, "machine_flute_lengths", None),
+        )
+        self.cam_worker.log.connect(self.log)
+        self.cam_worker.progress.connect(self._update_progress)
+        self.cam_worker.finished.connect(
+            lambda path, error, review=None: self._on_operation_finished(ir_data, title, path, error, review, on_done))
+        self.cam_worker.start()
+        return True
+
+    def _on_operation_finished(self, ir_data, title, output_path, error, review, on_done):
+        self._hide_busy()
+        if error:
+            error = error.split("\nTraceback", 1)[0].strip()
+            self.log(f"[ERROR] {title}: {error}")
+        else:
+            self.load_gcode(output_path)
+            review = review or {}
+            problems = list(review.get("problems") or [])
+            self.log(f"[MILO] {title} is loaded. Review the toolpath before running.")
+            if problems:
+                self.log("[MILO] Heads up, the check sees problems with this program: " + " ".join(problems))
+            info = summarize_ir(ir_data, output_path)
+            info["preview"] = review.get("image")
+            info["problems"] = problems
+            self.listener.on_program_ready(info)
+        if on_done is not None:
+            on_done(output_path if not error else None, error)
 
     def _on_cam_rejected(self, error):
         """Report a rejected program, and send the errors back to the model for a corrected version"""

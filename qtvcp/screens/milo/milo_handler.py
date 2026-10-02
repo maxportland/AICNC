@@ -7,6 +7,7 @@ qtvcp widgets worth keeping (toolpath graphics, G-code display, tool and offset 
 probing, ScreenOptions' dialogs), so qtvcp HAL-initializes them as usual.
 """
 
+import faulthandler
 import importlib.util
 import os
 import sys
@@ -24,6 +25,8 @@ PATH = Path()
 QHAL = Qhal()
 
 CONFIG_DIR = PATH.CONFIGPATH
+HANG_LOG = os.path.join(CONFIG_DIR, "milo_hang.log")
+HANG_SECONDS = 10  # the screen thread busy this long counts as a hang
 if CONFIG_DIR not in sys.path:
     sys.path.insert(0, CONFIG_DIR)
 
@@ -44,6 +47,8 @@ class HandlerClass:
         self.engine = None
         self.pendant_widget = None
         self.pendant_handler = None
+        self._hang_log = None
+        self._heartbeat = None
 
     # --- qtvcp hooks ---------------------------------------------------------------------
 
@@ -58,15 +63,61 @@ class HandlerClass:
 
     def initialized__(self):
         """HAL pins exist now; start Milo"""
+        self._start_hang_watchdog()
         self.machine.make_pins(QHAL)
+        self._single_close_confirmation()
         self._init_pendant_handler()
         self._start_engine()
         STATUS.connect("gcode-line-selected", lambda w, line: self._line_selected(line))
         self.w.setWindowFlags(QtCore.Qt.FramelessWindowHint)
+        # Never wider or taller than the screen: if something in the interface ever asks for more,
+        # it gets squeezed instead of pushing E-STOP and Stop off the edge
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            self.w.setMaximumSize(screen.size())
         self.shell.navigate("home")
         STATUS.emit("update-machine-log", "--- Milo screen started ---", "TIME")
 
+    def _single_close_confirmation(self):
+        """Milo's Shut down button already asks "Shut down LinuxCNC?", so qtvcp mustn't ask again.
+        qtvcp reads its shutdown_check preference after the screen is built (overriding
+        catch_close_option) and writes it back on exit, so turn it off here, in both places."""
+        options = getattr(self.w, "screen_options", None)
+        if options is not None:
+            options.close_event = False
+            prefs = getattr(options, "PREFS_", None)
+            if prefs:
+                prefs.putpref("shutdown_check", False, bool, "SCREEN_OPTIONS")
+        # With the check on, ScreenOptions replaced the window's close handler with its prompting
+        # one; put the original back (as qtvcp's own toolbar shutdown does). qtvcp shuts down
+        # cleanly when its event loop ends.
+        original = getattr(self.w, "originalCloseEvent_", None)
+        if original is not None:
+            self.w.closeEvent = original
+
+    def _start_hang_watchdog(self):
+        """If the screen thread stops for HANG_SECONDS, write every thread's stack to milo_hang.log.
+        A timer re-arms it while the event loop runs, so it only fires on a real hang."""
+        try:
+            self._hang_log = open(HANG_LOG, "a")
+        except OSError as e:
+            LOG.warning(f"No hang watchdog: {e}")
+            return
+
+        def rearm():
+            faulthandler.cancel_dump_traceback_later()
+            faulthandler.dump_traceback_later(HANG_SECONDS, repeat=True, file=self._hang_log)
+        self._heartbeat = QtCore.QTimer()
+        self._heartbeat.timeout.connect(rearm)
+        self._heartbeat.start(1000)
+        rearm()
+
     def closing_cleanup__(self):
+        if self._heartbeat is not None:
+            self._heartbeat.stop()
+            faulthandler.cancel_dump_traceback_later()
+        if self.shell is not None:
+            self.shell.pendant.shutdown()
         if self.engine is not None:
             self.engine.shutdown()
 
@@ -76,6 +127,8 @@ class HandlerClass:
         # Esc always aborts, even while typing
         if is_pressed and code == QtCore.Qt.Key_Escape and not event.isAutoRepeat():
             ACTION.ABORT()
+            if self.engine is not None:
+                self.engine.stop_speaking()
             return True
         widget = receiver
         while widget is not None:
@@ -145,7 +198,7 @@ class HandlerClass:
             "halCompBaseName": "milo",
             "notify_option": False,          # Milo shows errors itself (toasts + Activity)
             "catch_errors_option": True,     # ...but ScreenOptions still polls the error channel
-            "catch_close_option": True,
+            "catch_close_option": False,     # Milo's Shut down button asks once; qtvcp would ask again
             "play_sounds_option": False,
             "use_pref_file_option": True,
             "messageDialog_option": True,

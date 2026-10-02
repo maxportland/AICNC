@@ -1,6 +1,6 @@
 """
-Home: the cockpit. Milo's conversation in the middle, position and overrides beside it,
-the toolpath stage on the right, and suggestions that follow the machine's state.
+Home: the cockpit. Milo's conversation, position and overrides beside it, and suggestions
+that follow the machine's state. The toolpath has its own page.
 """
 
 import os
@@ -77,7 +77,6 @@ class HomePage(Page):
     key = "home"
     title = "Milo"
     icon = "sparkle"
-    wants_stage = True
 
     def __init__(self, shell, parent=None):
         super().__init__(parent)
@@ -124,6 +123,9 @@ class HomePage(Page):
         self.suggestions = SuggestionBar(machine)
         self.suggestions.picked.connect(shell.ask)
         center.addWidget(self.suggestions)
+        # The compact transcript goes without the suggestion chips
+        self.conversation.style_changed.connect(lambda style: self.suggestions.setVisible(style != "compact"))
+        self.conversation.set_style(shell.prefs.get("conversation_style", "bubbles"))
         row.addLayout(center, 1)
 
         machine.changed.connect(lambda topic: topic in ("state", "homing", "program") and self._context())
@@ -139,7 +141,7 @@ class HomePage(Page):
         self._context()
 
     def _view_program(self):
-        self.shell.navigate("program")
+        self.shell.navigate("toolpath")
 
     def _menu(self):
         engine = self.shell.engine
@@ -152,8 +154,7 @@ class HomePage(Page):
             self.conversation.set_show_details(not details)
 
         def new_conversation():
-            engine.reset_message_history()
-            self.conversation.clear()
+            engine.new_conversation()
 
         def save():
             self.shell.ask_text("Save conversation", engine.save_session, placeholder="Name, e.g. bracket v2")

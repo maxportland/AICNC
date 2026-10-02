@@ -12,6 +12,7 @@ LinuxCNC enforces soft limits itself as well; the check here rejects the
 command before the user is asked to confirm it, with a readable reason.
 """
 
+import math
 import os
 import re
 from typing import List, Optional, Tuple
@@ -251,34 +252,111 @@ def read_parameters(path: str) -> dict:
     return params
 
 
-def work_offsets(stat) -> Optional[Tuple[List[float], float, str]]:
-    """
-    Active work offset (G5x + G92) per axis in machine units, the XY rotation in degrees,
-    and where they came from; None if they can't be determined.
+_parameter_cache = {}
 
-    LinuxCNC's status only reports offsets once a work-offset command has run: before that
-    it says g5x_index 0 with all-zero offsets, even though the interpreter applies the
-    offsets it loaded from the parameter file. In that case read them from the file.
+
+def _cached_parameters(path: str) -> dict:
+    """read_parameters, re-read only when the file changes (the DRO asks on every position update)"""
+    mtime = os.path.getmtime(path)
+    cached = _parameter_cache.get(path)
+    if cached is None or cached[0] != mtime:
+        cached = (mtime, read_parameters(path))
+        _parameter_cache[path] = cached
+    return cached[1]
+
+
+def _file_parameters(stat) -> Optional[dict]:
+    path = _parameter_file(stat)
+    if path is None or not os.path.isfile(path):
+        return None
+    try:
+        return _cached_parameters(path)
+    except OSError:
+        return None
+
+
+def offsets_synced(stat) -> bool:
+    """
+    Whether LinuxCNC's status reports the work offsets the interpreter applies.
+
+    It doesn't after startup: until a work-offset command runs (G5x, G10, a touch-off) the
+    status says g5x_index 0 with all-zero offsets, even though the interpreter applies the
+    offsets it loaded from the parameter file. Anything that reads stat.g5x_offset then (qtvcp's
+    DRO and preview included) shows machine coordinates as if they were work coordinates.
+    """
+    return 1 <= stat.g5x_index <= 9
+
+
+def offset_parts(stat) -> Optional[Tuple[List[float], List[float], float, str]]:
+    """
+    The active G5x offset and G92 offset per axis in machine units, the XY rotation in
+    degrees, and where they came from; None if they can't be determined.
+
+    From the status once it is synced (offsets_synced), from the parameter file before that.
     Any touch-off or G5x/G10 this session updates the status, so the file is only used
     while it still matches what the interpreter loaded.
     """
-    if 1 <= stat.g5x_index <= 9:
-        offsets = [stat.g5x_offset[i] + stat.g92_offset[i] for i in range(9)]
-        return offsets, stat.rotation_xy, "status"
-
+    if offsets_synced(stat):
+        return list(stat.g5x_offset), list(stat.g92_offset), stat.rotation_xy, "status"
     number = WCS_NUMBERS.get(next((c for c in stat.gcodes if c in WCS_NUMBERS), None))
-    path = _parameter_file(stat)
-    if number is None or path is None or not os.path.isfile(path):
-        return None
-    try:
-        params = read_parameters(path)
-    except OSError:
+    params = _file_parameters(stat)
+    if number is None or params is None:
         return None
     base = 5201 + 20 * number  # G54 X is 5221, G55 X is 5241, ...
     g5x = [params.get(base + i, 0.0) for i in range(9)]
     rotation = params.get(base + 9, 0.0)
     g92 = [params.get(5211 + i, 0.0) for i in range(9)] if params.get(5210, 0.0) == 1.0 else [0.0] * 9
-    return [a + b for a, b in zip(g5x, g92)], rotation, "parameter file"
+    return g5x, g92, rotation, "parameter file"
+
+
+def work_offsets(stat) -> Optional[Tuple[List[float], float, str]]:
+    """
+    Active work offset (G5x + G92) per axis in machine units, the XY rotation in degrees,
+    and where they came from; None if they can't be determined (see offset_parts).
+    """
+    found = offset_parts(stat)
+    if found is None:
+        return None
+    g5x, g92, rotation, source = found
+    return [a + b for a, b in zip(g5x, g92)], rotation, source
+
+
+def work_position(stat, position) -> Optional[List[float]]:
+    """
+    Work coordinates (machine units) of a machine position, the way LinuxCNC's own
+    displays compute them: minus the G5x and tool offsets, rotated by the XY rotation,
+    minus G92. None if the offsets can't be determined.
+    """
+    found = offset_parts(stat)
+    if found is None:
+        return None
+    g5x, g92, rotation, _ = found
+    n = len(position)
+    rel = [position[i] - g5x[i] - stat.tool_offset[i] for i in range(n)]
+    if rotation and n >= 2:
+        t = math.radians(-rotation)
+        x, y = rel[0], rel[1]
+        rel[0] = x * math.cos(t) - y * math.sin(t)
+        rel[1] = x * math.sin(t) + y * math.cos(t)
+    return [rel[i] - g92[i] for i in range(n)]
+
+
+def stored_work_offset(stat, name: str) -> Optional[List[float]]:
+    """
+    The G5x offset stored for a work system ('G54'...) per axis in machine units, or None
+    if unknown. The active system comes from the status once it's synced; the others (and
+    the active one before that) from the parameter file, which LinuxCNC rewrites on mode changes.
+    """
+    code = next((c for c, n in WORK_OFFSETS.items() if n == name), None)
+    if code is None:
+        return None
+    if offsets_synced(stat) and active_work_offset(stat) == name:
+        return list(stat.g5x_offset)
+    params = _file_parameters(stat)
+    if params is None:
+        return None
+    base = 5201 + 20 * WCS_NUMBERS[code]
+    return [params.get(base + i, 0.0) for i in range(9)]
 
 
 def _move_targets(words, g_codes, stat) -> Tuple[dict, Optional[str]]:
@@ -442,8 +520,7 @@ WCS_NUMBERS = {code: n for n, code in enumerate(WORK_OFFSETS, start=1)}  # G54 =
 def active_work_offset(stat) -> str:
     """Active work offset (G54..G59.3), read from the active G-codes.
 
-    Not from stat.g5x_index, whose numbering differs between LinuxCNC versions
-    (2.9 reports 0 for G54).
+    Not from stat.g5x_index: that stays 0 until a work-offset command runs (see offsets_synced).
     """
     for code in stat.gcodes:
         if code in WORK_OFFSETS:
@@ -465,14 +542,14 @@ def describe_machine(stat) -> str:
 
         found = work_offsets(stat)
         offsets = found[0] if found else None
+        work_pos = work_position(stat, stat.position) if found else None
         work, machine, limits, travel, origin = [], [], [], [], []
         for a in axes:
             i = AXIS_LETTERS.index(a)
             s = 1.0 if a in ROTARY_AXES else to_prog
             pos = stat.position[i]
             if offsets is not None:
-                wpos = pos - offsets[i] - stat.tool_offset[i]
-                work.append(f"{a}{wpos * s:.4f}")
+                work.append(f"{a}{work_pos[i] * s:.4f}")
                 origin.append(f"{a}{offsets[i] * s:.3f}")
             machine.append(f"{a}{pos * s:.4f}")
             ax = stat.axis[i]

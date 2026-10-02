@@ -7,8 +7,10 @@ def build_pages(shell, qtvcp_widgets=None, vision_dir=None):
     from milo_ui.pages.home import HomePage
 
     widgets = qtvcp_widgets or {}
+    from milo_ui.pages.toolpath import ToolpathPage
     from milo_ui.pages.jog import JogPage
     from milo_ui.pages.program import ProgramPage
+    from milo_ui.pages.operations import OperationsPage
     from milo_ui.pages.tools import ToolsPage
     from milo_ui.pages.offsets import OffsetsPage
     from milo_ui.pages.probe import ProbePage
@@ -17,8 +19,10 @@ def build_pages(shell, qtvcp_widgets=None, vision_dir=None):
     from milo_ui.pages.settings import SettingsPage
 
     shell.add_page(HomePage(shell))
+    shell.add_page(ToolpathPage(shell))
     shell.add_page(JogPage(shell))
     shell.add_page(ProgramPage(shell, widgets.get("gcode_view")))
+    shell.add_page(OperationsPage(shell))
     shell.add_page(ToolsPage(shell, widgets.get("tool_table")))
     shell.add_page(OffsetsPage(shell, widgets.get("offset_table")))
     shell.add_page(ProbePage(shell, widgets.get("probe")))

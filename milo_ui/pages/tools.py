@@ -181,10 +181,29 @@ class ToolsPage(Page):
         actions.addWidget(kit.Button("Tool library", icon="books", variant="primary", size="sm",
                                      on_click=self.open_library))
         card = kit.Card(title="Tool table", trailing=actions)
+        # qtvcp's table locks itself unless the machine is on, idle and homed: say so
+        self.lock = QtWidgets.QWidget()
+        lock_row = QtWidgets.QHBoxLayout(self.lock)
+        lock_row.setContentsMargins(0, 0, 0, 0)
+        lock_row.setSpacing(10)
+        padlock = QtWidgets.QLabel()
+        padlock.setPixmap(theme.pixmap("lock", color=C.amber, size=26))
+        lock_row.addWidget(padlock)
+        self.lock_reason = kit.label("", "value", color=C.amber, weight=theme.MEDIUM)
+        lock_row.addWidget(self.lock_reason, 1)
+        card.add(self.lock)
         card.add(self.table, 1)
-        hint = kit.label("Tap a cell to edit it. Milo reads this table when it plans programs.", "muted")
-        card.add(hint)
+        self.hint = kit.label("Tap a cell to edit it. Milo reads this table when it plans programs.", "muted")
+        card.add(self.hint)
         row.addWidget(card, 1)
+        shell.machine.changed.connect(lambda topic: topic in ("state", "homing") and self._show_lock())
+        self._show_lock()
+
+    def _show_lock(self):
+        reason = self.shell.machine.tool_table_lock
+        self.lock_reason.setText(reason)
+        self.lock.setVisible(bool(reason))
+        self.hint.setVisible(not reason)
 
     def open_library(self):
         from milo_ui.pages.tool_library import ToolLibrary

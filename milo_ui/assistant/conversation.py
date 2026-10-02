@@ -8,6 +8,7 @@ View buttons. Technical lines are kept as small "detail" rows, hidden unless det
 """
 
 import html
+import os
 import re
 from datetime import datetime
 from typing import Optional, Tuple
@@ -18,9 +19,12 @@ from PyQt5.QtCore import Qt
 from milo_ui import theme, kit
 from milo_ui.theme import C, T
 from milo_ui.assistant.orb import Mark, ThinkingDots, Orb
+from milo_ui.assistant import terminal
 
 MAX_MESSAGES = 300  # oldest items are removed beyond this
 COLUMN_MAX_WIDTH = 820
+STYLES = ("bubbles", "compact")  # bubbles and cards, or a terminal-like transcript (see terminal.py)
+COMPACT_MAX_WIDTH = 1240
 
 _TAG_RE = re.compile(r'^\[([A-Z][A-Z0-9_-]*)\]\s*(.*)$', re.S)
 _CONFIRM_RE = re.compile(r'^(.*?)(?:\s+\[([^\]]+)\])?\s+-\s+say .*$', re.S)
@@ -88,27 +92,38 @@ def greeting() -> str:
 class ToolNotice(QtWidgets.QFrame):
     """One collapsible notice listing tool table problems"""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, compact=False):
         super().__init__(parent)
-        self.setObjectName("msg_card")
-        self.setProperty("kind", "warning")
+        self.compact = compact
         self.items = []
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(16, 8, 10, 8)
         layout.setSpacing(4)
         header = QtWidgets.QHBoxLayout()
         header.setSpacing(10)
-        icon = QtWidgets.QLabel()
-        icon.setPixmap(theme.pixmap("wrench", C.amber, 20))
-        header.addWidget(icon)
-        self.title = kit.label("", "msg_card_text")
+        if compact:
+            layout.setContentsMargins(0, 0, 0, 0)
+            header.setSpacing(0)
+            mark = terminal.text_label("●", C.amber)
+            mark.setFixedWidth(terminal.GUTTER)
+            header.addWidget(mark)
+            self.title = terminal.text_label("", C.text)
+            self.body = terminal.text_label("", C.text_3)
+            self.body.setContentsMargins(terminal.GUTTER, 0, 0, 0)
+        else:
+            self.setObjectName("msg_card")
+            self.setProperty("kind", "warning")
+            layout.setContentsMargins(16, 8, 10, 8)
+            icon = QtWidgets.QLabel()
+            icon.setPixmap(theme.pixmap("wrench", C.amber, 20))
+            header.addWidget(icon)
+            self.title = kit.label("", "msg_card_text")
+            self.body = kit.label("", "msg_card_text", wrap=True)
+            self.body.setTextFormat(Qt.RichText)
         header.addWidget(self.title, 1)
         self.toggle = kit.Button("Show", variant="ghost", size="sm")
         self.toggle.clicked.connect(lambda: self.set_expanded(self.body.isHidden()))
         header.addWidget(self.toggle)
         layout.addLayout(header)
-        self.body = kit.label("", "msg_card_text", wrap=True)
-        self.body.setTextFormat(Qt.RichText)
         self.body.setVisible(False)
         layout.addWidget(self.body)
 
@@ -116,7 +131,8 @@ class ToolNotice(QtWidgets.QFrame):
         self.items.append(text)
         count = len(self.items)
         self.title.setText(f"Tool table needs attention · {count} issue{'s' if count != 1 else ''}")
-        self.body.setText("<br>".join(f"• {html.escape(item)}" for item in self.items)
+        bullet = terminal.HOOK + " " if self.compact else "• "
+        self.body.setText("<br>".join(f"{bullet}{html.escape(item)}" for item in self.items)
                           + f"<br><span style='color:{C.text_3};'>Fix these on the Tools page.</span>")
 
     def set_expanded(self, expanded: bool):
@@ -178,6 +194,18 @@ class ProgramCard(QtWidgets.QFrame):
                 grid.addWidget(value_label, row, 1)
             grid.setColumnStretch(1, 1)
             layout.addLayout(grid)
+
+        preview = info.get("preview")
+        if preview and os.path.exists(preview):
+            # The simulated finished part, from above
+            picture = QtWidgets.QLabel()
+            pixmap = QtGui.QPixmap(preview)
+            if not pixmap.isNull():
+                picture.setPixmap(pixmap.scaledToWidth(min(420, pixmap.width()), Qt.SmoothTransformation))
+                picture.setStyleSheet(f"border: 1px solid {C.line_hi}; border-radius: 10px;")
+                layout.addWidget(picture, 0, Qt.AlignLeft)
+        for problem in info.get("problems") or []:
+            layout.addWidget(kit.label(f"⚠ {problem}", "body", color=C.amber, wrap=True))
 
         buttons = QtWidgets.QHBoxLayout()
         buttons.setSpacing(10)
@@ -267,6 +295,7 @@ class Conversation(QtWidgets.QScrollArea):
     orb_clicked = QtCore.pyqtSignal()
     view_program = QtCore.pyqtSignal()
     run_program = QtCore.pyqtSignal()
+    style_changed = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -300,6 +329,8 @@ class Conversation(QtWidgets.QScrollArea):
         self.working.hide()
 
         self._rows = []  # (widget, kind)
+        self._history = []  # what was shown, to redraw it in another style: ("message", kind, text, code) / ("program", info)
+        self.style = "bubbles"
         self._show_details = False
         self._stick_to_bottom = True
         self.verticalScrollBar().rangeChanged.connect(self._on_range_changed)
@@ -320,9 +351,54 @@ class Conversation(QtWidgets.QScrollArea):
         self.add_message(kind, text, code)
 
     def add_message(self, kind: str, text: str, code: Optional[str] = None):
+        self._remember(("message", kind, text, code))
+        self._render_message(kind, text, code)
+
+    def add_program(self, info: dict):
+        self._remember(("program", info))
+        self._render_program(info)
+
+    def set_style(self, style: str):
+        """Bubbles or compact; what's already in the conversation is redrawn"""
+        style = style if style in STYLES else "bubbles"
+        if style == self.style:
+            return
+        self.style = style
+        compact = style == "compact"
+        self.column.setMaximumWidth(COMPACT_MAX_WIDTH if compact else COLUMN_MAX_WIDTH)
+        self._layout.setSpacing(10 if compact else 16)
+        self._working_bubbles.setVisible(not compact)
+        self._working_compact.setVisible(compact)
+        for row, _ in self._rows:
+            row.deleteLater()
+        self._rows = []
+        for item in self._history:
+            if item[0] == "program":
+                self._render_program(item[1])
+            else:
+                self._render_message(*item[1:])
+        self.welcome.setVisible(self.is_empty())
+        self._stick_to_bottom = True
+        QtCore.QTimer.singleShot(0, self._scroll_to_end)
+        self.style_changed.emit(style)
+
+    def _remember(self, item):
+        self._history.append(item)
+        del self._history[:-MAX_MESSAGES]
+
+    def _render_message(self, kind, text, code):
         if kind == "tool_warning":
             return self._add_tool_warning(text)
-        if kind == "user":
+        if self.style == "compact":
+            if kind == "user":
+                widget = terminal.user_row(text)
+            elif kind == "assistant":
+                widget = terminal.milo_row(text)
+            elif kind in ("detail", "status"):
+                widget = terminal.note_row(kind, text)
+            else:
+                widget = terminal.event_row(kind, text, code)
+        elif kind == "user":
             widget = self._user_row(text)
         elif kind == "assistant":
             widget = self._milo_row(text)
@@ -332,15 +408,21 @@ class Conversation(QtWidgets.QScrollArea):
             widget = self._card_row(kind, text, code)
         self._append(widget, kind)
 
-    def add_program(self, info: dict):
-        card = ProgramCard(info)
+    def _render_program(self, info):
+        if self.style == "compact":
+            card = terminal.ProgramBlock(info)
+            row = card
+        else:
+            card = ProgramCard(info)
+            row = self._indent(card)
         card.view_clicked.connect(self.view_program.emit)
         card.run_clicked.connect(self.run_program.emit)
-        self._append(self._indent(card), "program")
+        self._append(row, "program")
 
     def set_working(self, busy: bool, text: str = ""):
         self.working.setVisible(busy)
         self.working_text.setText(text or "Thinking…")
+        self._working_compact.set_text(text or "Thinking…")
         if busy:
             self._stick_to_bottom = True
             QtCore.QTimer.singleShot(0, self._scroll_to_end)
@@ -352,6 +434,7 @@ class Conversation(QtWidgets.QScrollArea):
         for row, _ in self._rows:
             row.deleteLater()
         self._rows = []
+        self._history = []
         self.welcome.setVisible(True)
 
     def set_show_details(self, show: bool):
@@ -363,7 +446,7 @@ class Conversation(QtWidgets.QScrollArea):
     def tool_notice(self) -> Optional[ToolNotice]:
         for row, kind in reversed(self._rows):
             if kind == "tool_notice":
-                return row.findChild(ToolNotice)
+                return row if isinstance(row, ToolNotice) else row.findChild(ToolNotice)
         return None
 
     def is_empty(self) -> bool:
@@ -453,20 +536,28 @@ class Conversation(QtWidgets.QScrollArea):
     def _add_tool_warning(self, text):
         notice = self.tool_notice() if self._rows and self._rows[-1][1] == "tool_notice" else None
         if notice is None:
-            notice = ToolNotice()
-            self._append(self._indent(notice), "tool_notice")
+            notice = ToolNotice(compact=self.style == "compact")
+            self._append(notice if notice.compact else self._indent(notice), "tool_notice")
         notice.add_item(text)
 
     def _build_working(self):
-        row = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(row)
+        """The "Milo is working" row, in both styles (one is shown)"""
+        holder = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(holder)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._working_bubbles = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(self._working_bubbles)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
         layout.addWidget(Mark(34), 0, Qt.AlignVCenter)
         layout.addWidget(ThinkingDots(), 0, Qt.AlignVCenter)
         self.working_text = kit.label("Thinking…", "composer_status")
         layout.addWidget(self.working_text, 1)
-        return row
+        outer.addWidget(self._working_bubbles)
+        self._working_compact = terminal.Working()
+        self._working_compact.hide()
+        outer.addWidget(self._working_compact)
+        return holder
 
     @staticmethod
     def _fit(label, text, max_width):

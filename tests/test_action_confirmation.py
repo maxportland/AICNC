@@ -2,7 +2,8 @@
 
 import pytest
 
-from action_confirmation import ActionConfirmation, classify_reply, is_cancel_reply, strip_wake_phrase
+from action_confirmation import (ActionConfirmation, classify_reply, is_cancel_reply, is_new_conversation_request,
+                                 strip_wake_phrase)
 
 
 @pytest.mark.parametrize("text,expected", [
@@ -69,6 +70,23 @@ def test_timeout_cancels(qapp):
 ])
 def test_is_cancel_reply(text, expected):
     assert is_cancel_reply(text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "Let's start a new chat", "Clear context", "Let's start a new conversation", "Clear conversation",
+    "Hey Milo, clear the context.", "New chat", "new conversation please", "Can we start a fresh conversation?",
+    "reset the chat", "Start over", "Clear chat history", "OK, let's start over",
+])
+def test_new_conversation_requests(text):
+    assert is_new_conversation_request(text)
+
+
+@pytest.mark.parametrize("text", [
+    "clear the chips off the table", "start the spindle", "start a new program", "let's start a new pocket",
+    "What is a new conversation?", "clear", "new", "Clear context and move X 10", "",
+])
+def test_not_new_conversation_requests(text):
+    assert not is_new_conversation_request(text)
 
 
 def test_resolved_callback_runs_on_confirm_cancel_and_timeout(qapp):

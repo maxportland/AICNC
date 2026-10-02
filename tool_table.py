@@ -127,3 +127,27 @@ def get_tool_table(config_path: str, machine_units: str = "mm",
     for warning in warnings:
         log(f"[TOOLS] {warning}")
     return format_tools_for_prompt(tools, machine_units), usable_tools(tools)
+
+
+def describe_tools(config_path: str, machine_units: str = "mm") -> str:
+    """Every tool in tool.tbl as context for questions and feeds and speeds, including the
+    problems (a suspect diameter is shown with its warning rather than dropped)"""
+    path = os.path.join(config_path, "tool.tbl")
+    try:
+        tools, warnings = read_tool_table(path, machine_units)
+    except OSError:
+        return "- Tool table: not found"
+    except Exception as e:
+        return f"- Tool table: could not be read ({e})"
+    if not tools:
+        return "- Tool table: empty"
+    lines = ["- Tool table (number: description, type, diameter, flutes):"]
+    for t in sorted(tools, key=lambda t: t["tool"]):
+        details = [t["type"]]
+        details.append(f"diameter {t['diameter']:g} {machine_units}" if t["diameter"] is not None
+                       else "diameter missing or implausible")
+        details.append(f"{t['flutes']} flutes" if t["flutes"] else "flutes unknown")
+        lines.append(f"  T{t['tool']}: {t['description']} ({', '.join(details)})")
+    for warning in warnings:
+        lines.append(f"  Problem: {warning}")
+    return "\n".join(lines)

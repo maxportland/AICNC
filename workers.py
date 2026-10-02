@@ -9,15 +9,33 @@ from PyQt5.QtCore import QThread, pyqtSignal, QMutex, QMutexLocker
 import sounddevice as sd
 import soundfile as sf
 import tempfile
+import time
 import numpy as np
 
-from ai_config import CAM_MODEL, TRANSCRIPTION_MODEL, TRANSCRIPTION_LANGUAGE, TRANSCRIPTION_PROMPT
+from ai_config import TRANSCRIPTION_LANGUAGE, TRANSCRIPTION_PROMPT, job_model, job_options, transcription_model
 
 # Speech detection: RMS of a 100 ms block above this counts as speech (matches the
 # recording manager's VAD: level = rms * 3 >= 0.1), and a recording needs this many
 # speech blocks to be worth transcribing.
 SPEECH_RMS = 0.1 / 3.0
 MIN_SPEECH_BLOCKS = 3
+# Speech is recorded at 16 kHz (all speech-to-text models work at 16 kHz anyway) and sent as
+# 16-bit audio with the silence before and after trimmed: about a quarter of the upload.
+RECORD_RATE = 16000
+TRIM_RMS = SPEECH_RMS / 3  # quieter than this at the ends counts as silence
+TRIM_PAD = 0.3  # s of audio kept around the speech, so word edges aren't clipped
+
+
+def trim_silence(recording, sample_rate, block_seconds=0.05):
+    """The recording without the silence before the first and after the last sound"""
+    samples = np.asarray(recording, dtype=np.float32).reshape(-1)
+    block = max(1, int(sample_rate * block_seconds))
+    loud = [i for i in range(0, len(samples), block)
+            if np.sqrt(np.mean(samples[i:i + block] ** 2)) >= TRIM_RMS]
+    if not loud:
+        return samples
+    pad = int(TRIM_PAD * sample_rate)
+    return samples[max(0, loud[0] - pad):min(len(samples), loud[-1] + block + pad)]
 
 
 def has_speech(recording, sample_rate, block_seconds=0.1):
@@ -70,9 +88,9 @@ class OpenAIWorker(QThread):
             # Make the API call (this will block this thread, not the UI thread)
             # JSON mode guarantees a parseable CAM IR object (no prose, no arithmetic in numbers)
             response = client.chat.completions.create(
-                model=CAM_MODEL,
+                model=job_model("cam"),
                 messages=self.message_history,
-                temperature=0.2,
+                **job_options("cam", temperature=0.2),
                 response_format={"type": "json_object"},
             )
             result = response.choices[0].message.content
@@ -81,11 +99,65 @@ class OpenAIWorker(QThread):
             self.error.emit(f"OpenAI API failed: {str(e)}")
 
 
+REVIEW_PROMPT = (
+    "You check CNC programs before they run. The image is a simulated top view of the finished part "
+    "(+Y up): light tan is the untouched stock surface, blue is where material was cut, darker blue is deeper. "
+    "Judge only whether the carved result clearly matches what the user asked for: missing or invisible "
+    "features, wrong or unrecognizable shapes, features in the wrong place or merged together. Don't comment on "
+    "feeds, speeds, tools, efficiency or small differences in proportion; a reasonable interpretation is a match. "
+    "Reply with JSON only: {\"matches\": true|false, \"problems\": [\"...\"]}. Each problem must say what is "
+    "wrong in the picture and how the program should change (which operation, what shape, depth or position)."
+)
+
+
+class ReviewWorker(QThread):
+    """Asks a vision model whether the simulated result looks like what was requested"""
+    finished = pyqtSignal(object)  # {"matches": bool, "problems": [str]}
+    error = pyqtSignal(str)
+
+    def __init__(self, api_key, image_path, requests, operations):
+        super().__init__()
+        self.api_key = api_key
+        self.image_path = image_path
+        self.requests = requests
+        self.operations = operations
+
+    def run(self):
+        try:
+            import base64
+            import json
+            with open(self.image_path, "rb") as f:
+                image = base64.b64encode(f.read()).decode("ascii")
+            asked = self.requests[-1] if self.requests else ""
+            text = f"The user asked: {asked}\n"
+            if len(self.requests) > 1:
+                text += "Earlier requests in this conversation (the program may build on them): " \
+                        + " | ".join(self.requests[:-1]) + "\n"
+            text += "The program's operations, in order:\n" + "\n".join(self.operations)
+            client = OpenAIClient(api_key=self.api_key)
+            response = client.chat.completions.create(
+                model=job_model("review"),
+                messages=[{"role": "system", "content": REVIEW_PROMPT},
+                          {"role": "user", "content": [
+                              {"type": "text", "text": text},
+                              {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image}"}},
+                          ]}],
+                **job_options("review", temperature=0),
+                response_format={"type": "json_object"},
+            )
+            verdict = json.loads(response.choices[0].message.content)
+            problems = [str(p) for p in verdict.get("problems") or [] if str(p).strip()]
+            self.finished.emit({"matches": bool(verdict.get("matches", not problems)), "problems": problems})
+        except Exception as e:
+            self.error.emit(f"Visual check failed: {e}")
+
+
 class CamWorker(QThread):
     """Worker thread that turns CAM IR into G-code without freezing the UI"""
     log = pyqtSignal(str)
     progress = pyqtSignal(int)
-    finished = pyqtSignal(object, object)  # (G-code path or None, error message or None)
+    # (G-code path or None, error message or None, the simulation's review dict or None)
+    finished = pyqtSignal(object, object, object)
 
     def __init__(self, ir_data, **options):
         """
@@ -105,7 +177,7 @@ class CamWorker(QThread):
             output_path, _, error = processor.process_ir_to_gcode(self.ir_data, **self.options)
         except Exception as e:
             output_path, error = None, f"Failed to process CAM IR: {e}"
-        self.finished.emit(output_path, error)
+        self.finished.emit(output_path, error, processor.last_review if output_path else None)
 
 
 class IntentRouterWorker(QThread):
@@ -137,6 +209,7 @@ class VoiceRecordingWorker(QThread):
     recording_finished = pyqtSignal()  # Emitted when recording finishes (before transcription)
     audio_level = pyqtSignal(float)  # Emits audio level (0.0 to 1.0) for VU meter
     no_speech = pyqtSignal()  # Recording had no speech; nothing was sent for transcription
+    transcribed_info = pyqtSignal(str)  # How the transcription went (model, time, audio length)
     cancelled = pyqtSignal()  # The user cancelled; audio was discarded
     
     def __init__(self, api_key):
@@ -145,7 +218,7 @@ class VoiceRecordingWorker(QThread):
         self.is_recording = False
         self.should_stop = False
         self.recording_data = []
-        self.sample_rate = 44100
+        self.sample_rate = RECORD_RATE
         self.stream = None
         self.is_cancelled = False
         self._lock = QMutex()  # For thread-safe access
@@ -267,7 +340,8 @@ class VoiceRecordingWorker(QThread):
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpfile:
                     filepath = tmpfile.name
                 
-                sf.write(filepath, recording, self.sample_rate)
+                trimmed = trim_silence(recording, self.sample_rate)
+                sf.write(filepath, trimmed, self.sample_rate, subtype="PCM_16")
                 
                 # Check prerequisites
                 if not self.api_key:
@@ -280,14 +354,20 @@ class VoiceRecordingWorker(QThread):
                 
                 # Transcribe audio (blocks this thread, not UI thread)
                 client = OpenAIClient(api_key=self.api_key)
+                model = transcription_model()
+                started = time.monotonic()
                 with open(filepath, "rb") as audio_file:
                     response = client.audio.transcriptions.create(
-                        model=TRANSCRIPTION_MODEL,
+                        model=model,
                         file=audio_file,
                         language=TRANSCRIPTION_LANGUAGE,
                         prompt=TRANSCRIPTION_PROMPT,
                     )
                 transcript = response.text
+                import os
+                self.transcribed_info.emit(
+                    f"[VOICE] Transcribed in {time.monotonic() - started:.1f} s by {model} "
+                    f"({len(trimmed) / self.sample_rate:.1f} s of audio, {os.path.getsize(filepath) // 1024} KB)")
                 # Cancelled while Whisper was working: drop the result
                 if self._cancelled():
                     self.cancelled.emit()
@@ -309,3 +389,117 @@ class VoiceRecordingWorker(QThread):
                 self.is_recording = False
             self.error.emit(f"Failed to start recording: {str(e)}")
 
+
+
+FEEDS_PROMPT = (
+    "You recommend CNC milling speeds and feeds. For each tool listed, give a spindle speed, a cutting feed\n"
+    "and a plunge feed for the given material, as starting points for this machine.\n"
+    "- Prefer vendor cutting data from the tool information when present.\n"
+    "- Otherwise use a typical surface speed and chip load for the material, cutter diameter and flute count.\n"
+    "- rpm must not exceed the spindle maximum. When the maximum limits rpm, keep the chip load per tooth\n"
+    "  (feed = rpm x flutes x chip load) rather than the catalog feed.\n"
+    "- Plunge feed is usually a third to a half of the cutting feed; for drills it's the drilling feed.\n"
+    "- A small hobby mill is less rigid than an industrial machine: be conservative.\n"
+    "- Units: feeds in the program's units per minute.\n"
+    "- If a tool's diameter is missing or suspect, infer it from the description and say so in why.\n"
+    "Reply with JSON only: {\"tools\": {\"<tool number>\": {\"rpm\": number, \"feed\": number, \"plunge\": number,\n"
+    "\"why\": \"one short sentence: chip load and surface speed used\"}}, \"notes\": \"anything the machinist\n"
+    "should watch for, one or two sentences\"}"
+)
+
+
+class FeedsWorker(QThread):
+    """Recommends speeds and feeds for the loaded program's tools and writes an adjusted copy"""
+    finished = pyqtSignal(object)  # {"path", "changes", "why", "notes", "units"} or {"error": str}
+
+    def __init__(self, api_key, path, material, tools_context, start_tool, max_rpm, max_feed, units, output_dir):
+        super().__init__()
+        self.api_key = api_key
+        self.path = path
+        self.material = material
+        self.tools_context = tools_context
+        self.start_tool = start_tool
+        self.max_rpm = max_rpm
+        self.max_feed = max_feed
+        self.units = units
+        self.output_dir = output_dir
+
+    def run(self):
+        try:
+            self.finished.emit(self._adjust())
+        except Exception as e:
+            self.finished.emit({"error": f"Adjusting the feeds failed: {e}"})
+
+    def _adjust(self):
+        import json
+        import os
+        import re
+        import feeds_adjust
+        with open(self.path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        try:
+            uses, program_units = feeds_adjust.analyze(text, self.start_tool)
+        except feeds_adjust.Unsupported as e:
+            return {"error": f"I can't safely adjust this program: {e}."}
+        units = program_units or self.units
+        adjustable = {t: u for t, u in uses.items() if not u.locked and (u.cut or u.plunge or u.rpm)}
+        if not adjustable:
+            return {"error": "This program has no feed moves or spindle speeds I can adjust."}
+        request = [f"Material: {self.material}", f"Program units: {units}",
+                   f"Spindle maximum: {self.max_rpm:g} rpm" if self.max_rpm else "Spindle maximum: unknown",
+                   "Tools in the program and what it uses now (most common values):"]
+        for tool, use in sorted(adjustable.items()):
+            now = use.summary()
+            request.append(f"- T{tool}: rpm {now['rpm'] or 'not set'}, cutting feed {now['feed'] or 'none'}, "
+                           f"plunge feed {now['plunge'] or 'none'}")
+        request.append("Tool information:\n" + self.tools_context)
+        client = OpenAIClient(api_key=self.api_key)
+        response = client.chat.completions.create(
+            model=job_model("cam"),
+            messages=[{"role": "system", "content": FEEDS_PROMPT}, {"role": "user", "content": "\n".join(request)}],
+            **job_options("cam", temperature=0.2),
+            response_format={"type": "json_object"},
+        )
+        reply = json.loads(response.choices[0].message.content)
+        targets, why = {}, {}
+        for key, values in (reply.get("tools") or {}).items():
+            try:
+                tool = int(str(key).lstrip("Tt"))
+            except ValueError:
+                continue
+            if tool in adjustable and isinstance(values, dict):
+                targets[tool] = {k: float(values[k]) for k in ("rpm", "feed", "plunge")
+                                 if isinstance(values.get(k), (int, float)) and values[k] > 0}
+                why[tool] = str(values.get("why") or "")
+        new_text, changes = feeds_adjust.apply(text, targets, self.start_tool, self.max_rpm, self.max_feed)
+        if not any(changes.values()):
+            return {"error": "I couldn't work out new speeds and feeds for this program's tools."}
+        stem = os.path.splitext(os.path.basename(self.path))[0]
+        slug = re.sub(r"[^a-z0-9]+", "-", self.material.lower()).strip("-")[:30] or "adjusted"
+        output_dir = os.path.expanduser(self.output_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        out_path = os.path.join(output_dir, f"{stem}_{slug}.ngc")
+        header = (f"(Speeds and feeds adjusted by Milo for {self.material}; "
+                  f"original: {os.path.basename(self.path)})\n")
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(header + new_text)
+        skipped = [t for t, u in uses.items() if u.locked]
+        return {"path": out_path, "changes": changes, "why": why, "notes": str(reply.get("notes") or ""),
+                "units": units, "skipped": skipped, "original": self.path}
+
+
+class ModelListWorker(QThread):
+    """The models this API key can use, for the Settings picker"""
+    finished = pyqtSignal(object)  # {"chat": [...], "transcription": [...]} newest first, or None
+
+    def __init__(self, api_key):
+        super().__init__()
+        self.api_key = api_key
+
+    def run(self):
+        try:
+            from ai_config import chat_models, transcription_models
+            models = [(m.id, getattr(m, "created", 0) or 0) for m in OpenAIClient(api_key=self.api_key).models.list().data]
+            self.finished.emit({"chat": chat_models(models), "transcription": transcription_models(models)})
+        except Exception:
+            self.finished.emit(None)

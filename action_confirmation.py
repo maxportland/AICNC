@@ -58,6 +58,25 @@ def is_cancel_reply(text: str) -> bool:
             and any(w in NO_WORDS or w == "forget" for w in words))
 
 
+# "Let's start a new chat", "clear context", "new conversation please", "reset the chat", "start over"
+_NEW_CONVERSATION_RE = re.compile(
+    r"^(?:(?:ok|okay|alright|so|now|please|milo|can we|could we|let's|lets|let us|i want to|i'd like to|"
+    r"i would like to|go ahead and)\s+)*"
+    r"(?:(?:start|begin|open|make)\s+(?:a\s+|the\s+)?(?:new|fresh|clean)\s+(?:chat|conversation|session|context)"
+    r"|(?:a\s+)?(?:new|fresh)\s+(?:chat|conversation|session)"
+    r"|(?:clear|reset|wipe|erase)\s+(?:the\s+|our\s+|your\s+|this\s+)?"
+    r"(?:context|conversation|chat|history|chat history|conversation history|memory)"
+    r"|start\s+(?:over|fresh|from scratch))"
+    r"(?:\s+(?:please|now|milo|thanks|thank you))*$")
+
+
+def is_new_conversation_request(text: str) -> bool:
+    """True if the whole request asks to start a new conversation ("Let's start a new chat",
+    "Clear context"). The whole request, so "clear the chips off the table" isn't one."""
+    words = re.sub(r"[^a-z' ]", " ", strip_wake_phrase(text).lower()).split()
+    return bool(_NEW_CONVERSATION_RE.match(" ".join(words)))
+
+
 class ActionConfirmation:
     """Holds at most one proposed machine action until the user confirms or cancels it.
 

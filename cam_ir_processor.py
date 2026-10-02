@@ -21,7 +21,7 @@ DIAMETER_TOLERANCE = 0.01
 if TYPE_CHECKING:
     from cam_ir.ir_types import (
         Operation, DrillOp, Profile2DOp, Pocket2DOp, FaceOp,
-        EngraveOp, TextOp, BoringOp, TapOp, ThreadOp
+        EngraveOp, TextOp, BoringOp, TapOp, ThreadOp, ThreadMillOp
     )
 
 try:
@@ -36,7 +36,7 @@ try:
     from cam_ir.validate import validate_ir, ValidationError
     from cam_ir.ir_types import (
         Operation, DrillOp, Profile2DOp, Pocket2DOp, FaceOp,
-        EngraveOp, TextOp, BoringOp, TapOp, ThreadOp
+        EngraveOp, TextOp, BoringOp, TapOp, ThreadOp, ThreadMillOp
     )
     from cam_ir.planner.drill import plan_drill
     from cam_ir.planner.profile import plan_profile
@@ -47,6 +47,7 @@ try:
     from cam_ir.planner.bore import plan_bore
     from cam_ir.planner.tap import plan_tap
     from cam_ir.planner.thread import plan_thread
+    from cam_ir.planner.thread_mill import plan_thread_mill
     from cam_ir.planner.optimize import optimize_toolpath
     from cam_ir.planner.apply_feedspeed import apply_calculated_feedspeeds
     from cam_ir.planner.transform import transform_moves
@@ -66,6 +67,7 @@ except ImportError as e:
     BoringOp = None
     TapOp = None
     ThreadOp = None
+    ThreadMillOp = None
 
 
 def operation_depth(op) -> Optional[float]:
@@ -91,6 +93,9 @@ class CAMIRProcessor:
         """
         self.log = log_callback if log_callback else (lambda msg: None)
         self.progress = progress_callback if progress_callback else (lambda p: None)
+        # What the last program's simulation found: {"problems": [...], "image": png path or None,
+        # "operations": [...]} (see review_toolpath)
+        self.last_review = None
     
     def extract_json_from_response(self, response_text: str) -> Optional[dict]:
         """
@@ -158,6 +163,8 @@ class CAMIRProcessor:
             moves = plan_tap(op, tool, ir_obj.safe_z, ir_obj.clearance_z)
         elif isinstance(op, ThreadOp):
             moves = plan_thread(op, tool, ir_obj.safe_z, ir_obj.clearance_z)
+        elif isinstance(op, ThreadMillOp):
+            moves = plan_thread_mill(op, tool, ir_obj.safe_z, ir_obj.clearance_z)
         else:
             raise ValueError(f"Unknown operation type: {op.op}")
         
@@ -223,11 +230,28 @@ class CAMIRProcessor:
                     errors.append(f"Operation {i} ({op.op}): rpm {op.rpm} is above the spindle maximum of {max_rpm:g}.")
         return errors
 
+    def review_toolpath(self, ir, operation_moves, image_path) -> dict:
+        """Simulate the cut: operations that remove nothing, rapids through material, and a
+        top-view picture of the result. A failed check never blocks the program."""
+        import toolpath_check
+        review = {"problems": [], "image": None, "operations": []}
+        try:
+            sim = toolpath_check.simulate(ir, operation_moves)
+            review["problems"] = toolpath_check.find_problems(sim)
+            for result, op in zip(sim.ops, ir.ops):
+                depth = operation_depth(op)
+                review["operations"].append(f"{result.index + 1}. {result.label}"
+                                            + (f", {depth:g} {sim.units} deep" if depth else ""))
+            review["image"] = toolpath_check.render(sim, image_path)
+        except Exception as e:
+            self.log(f"[WARN] Couldn't simulate the toolpath: {e}")
+        return review
+
     def prune_outputs(self, output_dir: str, keep: int = KEEP_GENERATED_PROGRAMS):
-        """Delete all but the newest `keep` generated programs (and their IR JSON)"""
+        """Delete all but the newest `keep` generated programs (and their IR JSON and preview)"""
         programs = sorted(glob.glob(os.path.join(output_dir, "ai_toolpath_*.ngc")), key=os.path.getmtime)
         for path in programs[:-keep] if keep > 0 else programs:
-            for victim in (path, path[:-4] + ".json"):
+            for victim in (path, path[:-4] + ".json", path[:-4] + ".png"):
                 try:
                     os.remove(victim)
                 except OSError:
@@ -332,6 +356,8 @@ class CAMIRProcessor:
             with open(output_path, "w", encoding="utf-8") as f:
                 f.write(gcode)
             self.log(f"[INFO] G-code written to: {output_path}")
+            self.progress(90)
+            self.last_review = self.review_toolpath(ir, operation_moves, output_path[:-4] + ".png")
             self.prune_outputs(os.path.dirname(output_path))
             
             self.progress(100)

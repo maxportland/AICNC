@@ -11,6 +11,7 @@ decides what the user wants:
 - "power_on" / "power_off": turn the machine on or off
 - "estop_reset": the user asked to release the E-stop (always refused)
 - "program":  generate a G-code program via the CAM IR pipeline
+- "adjust_feeds": re-feed the loaded program for a material (feeds_adjust rewrites it)
 - "question": answer a question, no machine action
 - "unclear":  ask the user a clarifying question
 
@@ -32,17 +33,20 @@ except ImportError:
     OpenAIClient = None
 
 
-from ai_config import ROUTER_MODEL, DEFAULT_COOLANT
+from ai_config import DEFAULT_COOLANT, job_model, job_options
 
-INTENTS = ("mdi", "circle", "home", "run", "power_on", "power_off", "estop_reset", "program", "question", "unclear")
+INTENTS = ("mdi", "circle", "home", "run", "power_on", "power_off", "estop_reset", "program", "adjust_feeds",
+           "question", "unclear")
 
 SYSTEM_PROMPT = (
     "You are Milo, the assistant built into a LinuxCNC milling machine control.\n"
     "Decide what the user wants and reply with a single JSON object, nothing else:\n"
     "{\n"
-    '  "intent": "mdi" | "circle" | "home" | "run" | "power_on" | "power_off" | "estop_reset" | "program" | "question" | "unclear",\n'
+    '  "intent": "mdi" | "circle" | "home" | "run" | "power_on" | "power_off" | "estop_reset" | "program" |'
+    ' "adjust_feeds" | "question" | "unclear",\n'
     '  "circle": {"diameter": <number>, "direction": "cw" | "ccw", "feed": <number or null>},  // only for intent circle\n'
     '  "mdi": "<one line of G-code>",   // only for intent mdi\n'
+    '  "material": "<workpiece material>",   // only for intent adjust_feeds\n'
     '  "summary": "<short plain-English description of the action>",  // for mdi and home\n'
     '  "answer": "<short reply to the user>"   // for question and unclear\n'
     "}\n"
@@ -63,8 +67,19 @@ SYSTEM_PROMPT = (
     "  ('run the program', 'run current program', 'cycle start'). Not for creating a new program.\n"
     "- program: the user wants something MACHINED or a program/toolpath created or changed: facing, pocketing,\n"
     "  profiling, drilling, engraving, cutting a shape, 'make it deeper', 'generate G-code for ...'.\n"
+    "- adjust_feeds: change the speeds and feeds of the program that is ALREADY LOADED for a material or tool\n"
+    "  ('adjust the program for aluminum', 'optimize the feeds for walnut', 'use your recommendation in the program').\n"
+    "  Put the material in material, taken from the request or the conversation. If no material is known, use\n"
+    "  unclear and ask which material. Creating a new program is program, not adjust_feeds.\n"
     "- question: a question about the machine, its state, or CNC in general. Put a short answer (1-3 sentences) in answer.\n"
     "  Only state facts about the machine that appear in the machine state below; if it isn't there, say you don't know.\n"
+    "  Feeds and speeds questions are the exception: answer them in up to 6 sentences using general machining\n"
+    "  knowledge. Prefer the vendor cutting data in the machine state for linked tools. Otherwise pick a typical\n"
+    "  surface speed and chip load for the material and cutter diameter; rpm is capped at the spindle maximum\n"
+    "  (when the cap applies say so), feed = rpm x flutes x chip load. Give rpm, feed and plunge feed in active\n"
+    "  units, the chip load you used, and call it a starting point to adjust by sound and chips. If a tool's diameter\n"
+    "  or flute count is missing or marked as a problem, say so and what you assumed. Offer to apply it to the\n"
+    "  loaded program when one is loaded.\n"
     "- unclear: the request is ambiguous, incomplete, or could be either an immediate move or a program.\n"
     "  Put ONE short clarifying question in answer. Use this when a move is missing the axis, the distance, or\n"
     "  the direction. NEVER guess a distance, speed, or position the user did not give.\n"
@@ -147,10 +162,11 @@ class IntentRouter:
 
         client = OpenAIClient(api_key=api_key)
         response = client.chat.completions.create(
-            model=ROUTER_MODEL,
+            model=job_model("router"),
             messages=messages,
-            temperature=0,
-            max_tokens=200,
+            **job_options("router", temperature=0),
+            # Room for the reasoning tokens as well as the short JSON answer
+            max_completion_tokens=2000,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content or ""
@@ -183,6 +199,7 @@ class IntentRouter:
             "mdi": " ".join(str(data.get("mdi") or "").upper().split()),
             "summary": str(data.get("summary") or "").strip(),
             "answer": str(data.get("answer") or "").strip(),
+            "material": str(data.get("material") or "").strip(),
             "raw": raw,
         }
         if result["intent"] == "mdi" and not result["mdi"]:
@@ -190,6 +207,9 @@ class IntentRouter:
         if result["intent"] == "circle" and not result["circle"]["diameter"]:
             result["intent"] = "unclear"
             result["answer"] = result["answer"] or "What diameter should the circle be?"
+        if result["intent"] == "adjust_feeds" and not result["material"]:
+            result["intent"] = "unclear"
+            result["answer"] = result["answer"] or "What material are you cutting?"
         if result["intent"] == "unclear" and not result["answer"]:
             result["answer"] = "Sorry, I didn't understand that. Could you rephrase?"
         return result

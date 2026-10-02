@@ -127,3 +127,14 @@ def test_cancel_listening_drops_open_question():
     assert h.router_history == []
     assert not h._awaiting_clarification and not h._listening_for_reply and h._auto_listens == 0
     assert logs == ["[MILO] Okay, never mind."]
+
+
+def test_silence_is_trimmed_around_speech():
+    import numpy as np
+    from workers import trim_silence, TRIM_PAD
+    rate = 16000
+    quiet = np.zeros(rate * 2, dtype=np.float32)
+    speech = (0.3 * np.sin(np.arange(rate) * 2 * np.pi * 220 / rate)).astype(np.float32)
+    trimmed = trim_silence(np.concatenate([quiet, speech, quiet]), rate)
+    assert abs(len(trimmed) / rate - (1.0 + 2 * TRIM_PAD)) < 0.1  # one second of speech plus the padding
+    assert len(trim_silence(quiet, rate)) == len(quiet)  # nothing loud: left alone (has_speech rejects it)

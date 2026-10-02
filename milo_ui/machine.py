@@ -23,6 +23,8 @@ try:
 except ImportError:  # previews on a machine without LinuxCNC
     linuxcnc = None
 
+import machine_safety
+
 AXES = ("X", "Y", "Z")
 WCS_NAMES = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"]
 
@@ -72,6 +74,7 @@ class MachineModel(QtCore.QObject):
         self.paused = False
         self.homed: Dict[str, bool] = {a: False for a in self.axes}
         self.homing = False
+        self.home_required = True  # False with [TRAJ] NO_FORCE_HOMING
         self.metric = True  # display units (G21)
         self.machine_metric = True
         self.limits: Dict[str, Tuple[float, float]] = {a: (0.0, 0.0) for a in self.axes}
@@ -105,6 +108,8 @@ class MachineModel(QtCore.QObject):
 
         self.wcs = "G54"
         self.wcs_offsets: Dict[str, List[float]] = {}
+        # False when the work position can't be worked out (the DRO then says so)
+        self.work_offset_known = True
 
         self.file = ""
         self.line = 0
@@ -191,6 +196,22 @@ class MachineModel(QtCore.QObject):
         return {"manual": "Manual", "mdi": "MDI", "auto": "Auto"}.get(self.mode, "")
 
     @property
+    def tool_table_lock(self) -> str:
+        """Why the tool table can't be edited right now, or "" if it can. qtvcp's table applies
+        each edit with an MDI G43, so it only unlocks when the machine is on, idle and homed."""
+        if self.estop:
+            return "Locked: release E-stop to edit tools"
+        if not self.on:
+            return "Locked: turn the machine on to edit tools"
+        if self.is_running:
+            return "Locked while a program runs"
+        if self.interp != "idle":
+            return "Locked while the machine is busy"
+        if self.home_required and not self.all_homed:
+            return "Locked: home the machine to edit tools"
+        return ""
+
+    @property
     def progress(self) -> float:
         """0..1 through the loaded program"""
         if not self.total_lines:
@@ -209,6 +230,11 @@ class MachineModel(QtCore.QObject):
     def unhome_all(self): raise NotImplementedError
     def jog_start(self, axis: str, direction: int): raise NotImplementedError
     def jog_stop(self, axis: str): raise NotImplementedError
+    # Game controller pendant: a jog of one tick's travel (velocity in units/min, signed), a
+    # single step, and stop. LinuxCNC adds each increment to the axis target.
+    def pendant_jog(self, axis: str, velocity: float, dt: float): raise NotImplementedError
+    def pendant_step(self, axis: str, direction: int, distance: float): raise NotImplementedError
+    def pendant_stop(self): raise NotImplementedError
     def set_jog_rate(self, rate: float): raise NotImplementedError
     def set_jog_increment(self, value: float, text: str): raise NotImplementedError
     def set_axis_origin(self, axis: str, value: float): raise NotImplementedError
@@ -347,6 +373,7 @@ class QtvcpMachine(MachineModel):
         self.halcomp = halcomp
         self._drawbar_pin = None
         self._probe_pin = None
+        self._offset_sync_tried = False
         self._read_ini()
         self._connect()
         self._poll()
@@ -394,6 +421,7 @@ class QtvcpMachine(MachineModel):
             label = labels[index] if index < len(labels) and labels[index] else code
             self.mdi_commands.append((str(label).replace("\\n", " ").strip(), code.strip()))
         self.program_prefix = info.PROGRAM_PREFIX or self.program_prefix
+        self.home_required = not info.NO_HOME_REQUIRED
         table = info.get_error_safe_setting("EMCIO", "TOOL_TABLE", "tool.tbl") or "tool.tbl"
         config_dir = os.path.dirname(os.path.abspath(info.INIPATH))
         self.tool_table_path = table if os.path.isabs(table) else os.path.join(config_dir, table)
@@ -450,8 +478,10 @@ class QtvcpMachine(MachineModel):
         self._set("state", estop=s.task_state == L.STATE_ESTOP, on=s.task_state == L.STATE_ON,
                   mode=mode, interp=interp, paused=bool(s.paused))
         self._set("homing", homed=homed, homing=homing)
+        wcs = machine_safety.active_work_offset(s)
         self._set("offsets", metric=s.program_units != 1 if s.program_units else self.machine_metric,
-                  wcs=WCS_NAMES[s.g5x_index - 1] if 1 <= s.g5x_index <= 9 else "G54")
+                  wcs=wcs if wcs in WCS_NAMES else "G54")
+        self._sync_offsets_if_needed(s)
         spindle = s.spindle[0]
         direction = int(spindle["direction"]) if spindle["enabled"] else 0
         self._set("spindle", spindle_requested=abs(float(spindle["speed"])), spindle_dir=direction)
@@ -468,6 +498,39 @@ class QtvcpMachine(MachineModel):
             self.run_started = None
             self.changed.emit("program")
 
+    def _sync_offsets_if_needed(self, s):
+        """
+        Make LinuxCNC's status report the work offset the interpreter applies.
+
+        After startup the status says "no offset" (machine_safety.offsets_synced) while the
+        interpreter applies the G54 it loaded from linuxcnc.var, so qtvcp's DRO and preview show
+        machine coordinates as work coordinates. Selecting the active system again (an MDI G54,
+        no motion) makes the interpreter report it. Once per power-on, as soon as the machine is
+        on, idle, still, and homed when homing is required (LinuxCNC refuses MDI before that).
+        """
+        if not self.on:
+            self._offset_sync_tried = False
+            return
+        if (self._offset_sync_tried or machine_safety.offsets_synced(s) or self.estop
+                or self.interp != "idle" or self.mode == "auto" or self.homing or not s.inpos
+                or (self.home_required and not self.all_homed)):
+            return
+        wcs = machine_safety.active_work_offset(s)
+        if wcs not in WCS_NAMES:
+            return
+        self._offset_sync_tried = True
+        # Not from inside the status poll: SET_USER_SYSTEM changes mode and waits for the MDI
+        QtCore.QTimer.singleShot(0, lambda: self._sync_offsets(wcs))
+
+    def _sync_offsets(self, wcs):
+        if not self.on or self.interp != "idle":
+            self._offset_sync_tried = False  # try again on a later poll
+            return
+        try:
+            self.ACTION.SET_USER_SYSTEM(wcs)
+        except Exception as e:
+            self.message.emit("warning", f"Could not load the {wcs} work offset into the display: {e}")
+
     def _convert(self, values):
         """Machine units -> display units"""
         if self.metric == self.machine_metric:
@@ -477,8 +540,19 @@ class QtvcpMachine(MachineModel):
 
     def _on_position(self, w, absolute, relative, dtg, joint):
         n = len(self.axes)
+        s = self.STATUS.stat
+        known = True
+        if not machine_safety.offsets_synced(s):
+            # qtvcp's relative position uses the status offsets, which read zero until synced
+            work = machine_safety.work_position(s, list(absolute))
+            if work is None:
+                known = False
+            else:
+                relative = work
         self.pos_abs = self._convert(absolute[:n])
         self.pos_rel = self._convert(relative[:n])
+        if known != self.work_offset_known:
+            self._set("offsets", work_offset_known=known)
         self.pos_dtg = self._convert(dtg[:n])
         self.position_changed.emit()
 
@@ -563,6 +637,27 @@ class QtvcpMachine(MachineModel):
 
     def jog_stop(self, axis):
         if self.jog_increment == 0:  # incremental jogs finish on their own
+            self.ACTION.JOG(self.axis_index(axis), 0, 0, 0)
+
+    def pendant_jog(self, axis, velocity, dt):
+        distance = abs(velocity) * dt / 60.0
+        if distance <= 0 or not self.ready:
+            return
+        if self.mode != "manual":
+            self.ACTION.SET_MANUAL_MODE()
+        # A little faster than the stick asks, so the axis keeps up with its target
+        from milo_ui.pendant import CATCH_UP
+        self.ACTION.JOG(self.axis_index(axis), 1 if velocity > 0 else -1, abs(velocity) * CATCH_UP / 60.0, distance)
+
+    def pendant_step(self, axis, direction, distance):
+        if not self.ready or distance <= 0:
+            return
+        if self.mode != "manual":
+            self.ACTION.SET_MANUAL_MODE()
+        self.ACTION.JOG(self.axis_index(axis), direction, self.jog_rate / 60.0, distance)
+
+    def pendant_stop(self):
+        for axis in self.axes:
             self.ACTION.JOG(self.axis_index(axis), 0, 0, 0)
 
     def set_jog_rate(self, rate):
@@ -851,6 +946,24 @@ class SimMachine(MachineModel):
 
     def jog_stop(self, axis):
         self._jogging.pop(axis, None)
+
+    def pendant_jog(self, axis, velocity, dt):
+        self._move_axis(axis, velocity * dt / 60.0)
+
+    def pendant_step(self, axis, direction, distance):
+        self._move_axis(axis, direction * distance)
+
+    def pendant_stop(self):
+        pass
+
+    def _move_axis(self, axis, delta):
+        if not self.ready:
+            return
+        i = self.axis_index(axis)
+        lo, hi = self.limits[axis]
+        self.pos_abs[i] = max(lo, min(hi, self.pos_abs[i] + delta))
+        self._update_rel()
+        self.position_changed.emit()
 
     def set_jog_rate(self, rate):
         self.jog_rate = max(self.jog_rate_min, min(self.jog_rate_max, float(rate)))

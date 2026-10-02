@@ -94,3 +94,59 @@ def test_program_card_buttons(qapp):
     buttons["View toolpath"].click()
     assert ran == [1] and viewed == [1]
     assert view.welcome.isHidden()
+
+
+def _fill(view):
+    view.add_log_line("[USER] Move X ten")
+    view.add_log_line("[MILO] Tool 8 is **loaded**, use `T8`.")
+    view.add_log_line("[CONFIRM] Rapid X +10 mm  [G91 G0 X10.0000] - say 'yes' or press Confirm, 'no' or Cancel to abort.")
+    view.add_log_line("[MDI] Executed: G91 G0 X10.0000")
+    view.add_log_line("[TOOLS] T59 is listed 2 times")
+    view.add_log_line("[TOOLS] T2 diameter looks wrong")
+    view.add_program({"name": "part.ngc", "ops": [{"name": "Pocket", "tool": 8}], "tools": [], "stock": "100 × 50 × 10 mm"})
+
+
+def _texts(view):
+    from PyQt5.QtWidgets import QLabel
+    return " ".join(label.text() for label in view.column.findChildren(QLabel) if label.isVisibleTo(view))
+
+
+def test_switching_style_redraws_the_conversation(qapp):
+    view = Conversation()
+    _fill(view)
+    kinds = [kind for _, kind in view._rows]
+    view.set_style("compact")
+    qapp.processEvents()
+    assert [kind for _, kind in view._rows] == kinds  # same items, redrawn
+    text = _texts(view)
+    assert "&gt;" in text and "●" in text and "└" in text
+    assert "<b>loaded</b>" in text and "T8</span>" in text  # light markdown
+    assert view.tool_notice().compact and len(view.tool_notice().items) == 2
+    view.set_style("bubbles")
+    qapp.processEvents()
+    assert [kind for _, kind in view._rows] == kinds and not view.tool_notice().compact
+
+
+def test_compact_program_buttons_and_working_row(qapp):
+    view = Conversation()
+    view.set_style("compact")
+    ran, viewed = [], []
+    view.run_program.connect(lambda: ran.append(1))
+    view.view_program.connect(lambda: viewed.append(1))
+    _fill(view)
+    from PyQt5.QtWidgets import QPushButton
+    buttons = {b.text(): b for b in view.findChildren(QPushButton)}
+    buttons["Run…"].click()
+    buttons["View toolpath"].click()
+    assert ran == [1] and viewed == [1]
+    view.set_working(True, "Designing toolpaths…")
+    assert view._working_compact.text.text() == "Designing toolpaths…"
+    assert view._working_bubbles.isHidden()
+
+
+def test_clear_forgets_history(qapp):
+    view = Conversation()
+    _fill(view)
+    view.clear()
+    view.set_style("compact")
+    assert view._rows == [] and not view.welcome.isHidden()

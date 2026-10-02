@@ -82,3 +82,30 @@ def test_missing_key_is_reported_not_sent(tmp_path, qapp):
     lines = [args[0] for name, args in listener.events if name == "on_message"]
     assert any("API key is missing" in line for line in lines)
     assert not any(name == "on_busy" and args[0] for name, args in listener.events)
+
+
+def test_spoken_new_conversation_resets_without_the_ai(tmp_path, qapp):
+    """"Let's start a new chat" is handled locally: no API key needed, nothing sent to the router"""
+    engine, listener, _ = _engine(FakeStat(), tmp_path)
+    engine.router_history = [{"role": "user", "content": "face the stock"}]
+    engine.program_requests = ["face the stock"]
+    engine.confirmation.propose({"kind": "mdi", "command": "G91 G0 X10", "summary": "Rapid X +10"})
+    engine.handle_request("Hey Milo, let's start a new chat", from_voice=True)
+    assert engine.router_worker is None
+    assert engine.router_history == [] and engine.program_requests == []
+    assert not engine.confirmation.pending  # a pending move is cancelled, never run
+    names = [name for name, _ in listener.events]
+    assert "on_conversation_reset" in names and "on_clear_input" in names
+    messages = [args[0] for name, args in listener.events if name == "on_message"]
+    assert messages[-1].startswith("[MILO] Okay, new conversation")
+    # The reply comes after the transcript is cleared, so it opens the new conversation
+    assert names.index("on_conversation_reset") < len(names) - 1 - names[::-1].index("on_message")
+
+
+def test_new_conversation_waits_for_running_work(tmp_path, qapp, monkeypatch):
+    engine, listener, _ = _engine(FakeStat(), tmp_path)
+    engine.program_requests = ["face the stock"]
+    monkeypatch.setattr(engine, "_busy_working", lambda: True)
+    engine.handle_request("Clear context", from_voice=False)
+    assert engine.program_requests == ["face the stock"]
+    assert ("on_conversation_reset", ()) not in listener.events

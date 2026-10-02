@@ -9,6 +9,7 @@ import os
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtCore import Qt
 
+import machine_safety
 from milo_ui import theme, kit
 from milo_ui.theme import C, T
 from milo_ui.shell import Page
@@ -145,18 +146,28 @@ class OffsetsPage(Page):
                 name, data, lambda n=name: self._apply(n), lambda n=name: self._delete(n)))
 
     def _current_g54(self):
+        """G54's X Y Z in machine units, or None if it can't be read"""
         stat = self.machine.stat()
-        if stat is not None and hasattr(stat, "g5x_offset") and getattr(stat, "g5x_index", 1) == 1:
-            return list(stat.g5x_offset[:3])
-        return list(self.machine.wcs_offsets.get("G54", [0.0, 0.0, 0.0]))
+        if stat is None:  # previews without LinuxCNC
+            return list(self.machine.wcs_offsets.get("G54", [0.0, 0.0, 0.0]))
+        # Not stat.g5x_offset alone: it reads zero until a work-offset command runs this session
+        offset = machine_safety.stored_work_offset(stat, "G54")
+        return list(offset[:3]) if offset is not None else None
 
     def _save(self):
         if self.machine.wcs != "G54":
             return self.shell.toaster.show("Switch to G54 to save it as a fixture.", "warning")
 
+        if self._current_g54() is None:
+            return self.shell.toaster.show("Can't read the G54 offset right now, so nothing was saved.", "error")
+
         def save(name):
+            current = self._current_g54()
+            if current is None:
+                return self.shell.toaster.show("Can't read the G54 offset right now, so nothing was saved.",
+                                               "error")
             fixtures = load_fixtures()
-            x, y, z = self._current_g54()
+            x, y, z = current
             fixtures[name] = {"x": x, "y": y, "z": z}
             save_fixtures(fixtures)
             self.refresh_fixtures()
