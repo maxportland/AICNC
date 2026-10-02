@@ -197,6 +197,11 @@ class CAMIRProcessor:
             Error messages (empty if the IR fits the machine)
         """
         errors = []
+        for i, op in enumerate(ir.ops):
+            if op.op == "thread":
+                # A straight plunge at pitch x rpm, then reversed out: it would snap a thread mill
+                errors.append(f"Operation {i} (thread) is a straight plunge, not thread milling. Use a "
+                              f"thread_mill op (helical, with major_diameter and pitch) instead.")
         if flute_lengths:
             ir_units = ir.units.value if hasattr(ir.units, "value") else str(ir.units)
             scale = 1.0 if ir_units == machine_units else (1 / 25.4 if machine_units == "mm" else 25.4)
