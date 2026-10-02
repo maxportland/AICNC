@@ -630,3 +630,55 @@ def test_home_all_lives_in_the_zero_and_go_to_menu(qapp):
     _press(pendant, buttons={"A"}, LY=1.0, rt=1.0)
     assert run == ["home_all"]
     pendant.shutdown()
+
+
+# --- the hold timeout and a stick held at its stop ---
+
+def _held(usb, **sticks):
+    state = InputState(connected=True, last_event=100.0, usb=usb)
+    state.triggers["RT"] = 1.0
+    state.sticks.update(sticks)
+    return state
+
+
+@pytest.mark.parametrize("usb,sticks,keeps_going", [
+    (True, {"LX": 1.0}, True),                       # pinned on the 8BitDo's USB receiver: no events is normal
+    (True, {"LX": 0.71, "LY": 0.71}, True),          # pinned diagonally against a round gate
+    (True, {"LX": 1.0, "RY": -1.0}, True),           # both sticks pinned
+    (True, {"LX": 0.6}, False),                      # part-way and silent: suspicious, pause
+    (True, {"LX": 1.0, "RY": 0.5}, False),           # one stick pinned, the other part-way
+    (False, {"LX": 1.0}, False),                     # Bluetooth: a dead link can go unnoticed for seconds
+])
+def test_a_stick_held_at_its_stop_isnt_timed_out_on_usb(usb, sticks, keeps_going):
+    """Linux sends nothing while a stick sits at its end stop; that used to pause full-speed jogs every
+    1.5 s (the jerk). On USB a lost link removes the device instead, which stops jogging at once."""
+    logic = _logic()
+    out = logic.update(_held(usb, **sticks), 101.4, True)
+    assert out.status == "jogging"
+    out = logic.update(_held(usb, **sticks), 103.0, True)
+    assert (out.status == "jogging") == keeps_going
+    assert bool(out.velocities) == keeps_going
+
+
+def test_knows_how_the_pad_is_connected():
+    from milo_ui.pendant import gamepad_bus
+    text = ('I: Bus=0003 Vendor=2dc8 Product=310b\nN: Name="Generic X-Box pad"\nH: Handlers=event3 js1\n\n'
+            'I: Bus=0005 Vendor=045e Product=0b13\nN: Name="Xbox Wireless Controller"\nH: Handlers=event13 js2\n')
+    assert gamepad_bus(text, "/dev/input/event3") == "usb"
+    assert gamepad_bus(text, "/dev/input/event13") == "bluetooth"
+    assert gamepad_bus(text, "/dev/input/event1") == "other"
+
+
+def test_unplugging_still_stops_a_pinned_jog(qapp):
+    """The guard that replaces the timeout on USB: the device going away stops motion"""
+    from milo_ui.pendant import Pendant
+    machine = FakeMachine()
+    pendant = Pendant(machine, FakePrefs(pendant={"enabled": True}), reader_factory=FakeReader)
+    import time
+    pendant.state = _held(True, LX=1.0)
+    pendant.state.last_event = time.monotonic()
+    pendant.tick()
+    assert machine.calls and machine.calls[-1][0] == "jog"
+    pendant._on_input(InputState(connected=False))
+    assert machine.calls[-1] == ("stop",)
+    pendant.shutdown()

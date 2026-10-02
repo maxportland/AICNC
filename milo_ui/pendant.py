@@ -18,6 +18,7 @@ Safety:
 """
 
 import copy
+import math
 import os
 import re
 import select
@@ -31,6 +32,7 @@ from PyQt5 import QtCore
 TICK = 0.05  # s between jog updates
 CATCH_UP = 1.25  # jog increments run this much faster than the stick speed, so the target never runs away
 MAX_DT = 0.1  # a late tick still moves at most this much time's worth
+PINNED = 0.97  # a stick this far over is at its end stop, where it reads steady and sends no events
 
 # Controls: id -> label. Buttons are on/off; triggers and sticks are analog.
 BUTTONS = {"A": "A", "B": "B", "X": "X", "Y": "Y", "LB": "LB (left bumper)", "RB": "RB (right bumper)",
@@ -214,6 +216,7 @@ class InputState:
     triggers: Dict[str, float] = field(default_factory=lambda: {k: 0.0 for k in TRIGGERS})
     last_event: float = 0.0  # time.monotonic() of the last input from the controller
     events: int = 0  # running count, for an events-per-second readout
+    usb: bool = False  # on USB (a cable or a USB receiver): losing the link removes the device
 
     def pressed(self, control: str, threshold: float = 0.5) -> bool:
         """Buttons, and triggers pressed past threshold"""
@@ -223,7 +226,7 @@ class InputState:
 
     def copy(self) -> "InputState":
         return InputState(self.connected, set(self.buttons), dict(self.sticks), dict(self.triggers),
-                          self.last_event, self.events)
+                          self.last_event, self.events, self.usb)
 
 
 @dataclass
@@ -238,11 +241,30 @@ class Output:
 
 
 class PendantLogic:
-    """Controls in, jog commands out. No hardware, no Qt."""
+    """Controls in, jog commands out. No hardware, no Qt.
+
+    The hold timeout pauses stick jogging when the controller has sent nothing for a while, in case
+    its link died with a stick held over. But Linux only reports a stick when it changes, and a stick
+    pushed to its end stop reads a steady maximum: silence is normal there. On USB (a cable or a USB
+    receiver like 8BitDo's) a lost link removes the device, which stops jogging at once, so a stick
+    held at its stop isn't timed out. Part-way, or over Bluetooth (which can take seconds to notice a
+    lost link), the timeout applies.
+    """
 
     def __init__(self, config: dict):
         self.config = config
         self._previous: Set[str] = set()
+
+    def _held_at_stop(self, state: InputState) -> bool:
+        """Every stick that's jogging is pushed to its gate (any direction: a diagonal at the gate reads
+        about 0.7 on each axis), on a USB controller"""
+        if not state.usb:
+            return False
+        dead = float(self.config["deadzone"])
+        sides = {stick[0] for stick in self.config["sticks"].values()
+                 if stick and abs(state.sticks.get(stick, 0.0)) > dead}  # "L" / "R"
+        return bool(sides) and all(math.hypot(state.sticks.get(f"{side}X", 0.0), state.sticks.get(f"{side}Y", 0.0))
+                                   >= PINNED for side in sides)
 
     def stick_speed(self, value: float, axis: str, fine: float) -> float:
         """Signed units/min for a stick value, after the dead zone, curve and caps"""
@@ -321,7 +343,7 @@ class PendantLogic:
                 speed = self.stick_speed(state.sticks.get(stick, 0.0), axis, fine)
                 if speed:
                     output.velocities[axis] = speed
-        if output.velocities and now - state.last_event > float(c["hold_timeout"]):
+        if output.velocities and now - state.last_event > float(c["hold_timeout"]) and not self._held_at_stop(state):
             output.velocities = {}
             output.status = "paused"
         elif output.velocities or output.steps:
@@ -337,6 +359,17 @@ KEY_CODES = {304: "A", 305: "B", 307: "X", 308: "Y", 310: "LB", 311: "RB", 314: 
              316: "HOME", 317: "LS", 318: "RS",
              # Some pads report the d-pad as buttons
              544: "DPAD_UP", 545: "DPAD_DOWN", 546: "DPAD_LEFT", 547: "DPAD_RIGHT"}
+
+
+def gamepad_bus(devices_text: str, event_path: str) -> str:
+    """'usb', 'bluetooth' or 'other': how the device with this event node is connected"""
+    node = os.path.basename(event_path)
+    for block in devices_text.split("\n\n"):
+        if re.search(rf"\b{re.escape(node)}\b", block):
+            bus = re.search(r"I: Bus=([0-9a-fA-F]{4})", block)
+            code = bus.group(1).lower() if bus else ""
+            return {"0003": "usb", "0005": "bluetooth"}.get(code, "other")
+    return "other"
 
 
 def find_gamepad(devices_text: str) -> Optional[Tuple[str, str]]:
@@ -398,7 +431,8 @@ class GamepadReader(QtCore.QThread):
         while self._running:
             try:
                 with open(self.devices_path) as f:
-                    found = find_gamepad(f.read())
+                    devices = f.read()
+                found = find_gamepad(devices)
             except OSError:
                 found = None
             if found is None:
@@ -406,6 +440,7 @@ class GamepadReader(QtCore.QThread):
                 self._sleep(1.0)
                 continue
             path, self.name = found
+            self.usb = gamepad_bus(devices, path) == "usb"
             self._read(path)
             self.changed.emit(InputState(connected=False))
 
@@ -415,7 +450,7 @@ class GamepadReader(QtCore.QThread):
             time.sleep(0.1)
 
     def _read(self, path):
-        state = InputState(connected=True, last_event=time.monotonic())
+        state = InputState(connected=True, last_event=time.monotonic(), usb=getattr(self, "usb", False))
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
         except OSError:
