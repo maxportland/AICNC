@@ -110,8 +110,15 @@ number pad, nothing relies on hover, and scrolling is by drag. Fonts (Inter, Jet
   a selected line, optional stop, and the Facing / Hole-circle generators.
 - **Tools**: the tool in the spindle, change tool (M6), set tool (M61), measure length on the tool setter,
   apply G43, the power drawbar, the tool table, and the Fusion 360 **Tool library** (below).
-- **Offsets**: the active work system (G54-G59), the offset table, saved fixtures (`fixtures.json`), and
-  **Undo** for the last work offset change.
+- **Offsets**: the work systems (G54-G59, G59.1-3 under More) as things you use: each with a name you give it
+  ("Left vise"), Active / In use / Not used, and its origin. Pick one from the list or its pin on the **map**
+  (the table from above, the camera photo when there's a scan, origins, fixtures and the tool) to see where
+  its origin is and what the tool reads in it, then zero it at the tool (any system, active or not), set an
+  axis to a value or type its origin, make it active, go over its origin, probe it, copy it to another
+  system, save it as a fixture or clear it. **G92** and the **tool length** (which shift every system) are
+  flagged when they're likely to surprise, with one-tap fixes. **Fixtures** (`fixtures.json`, now with
+  rotation) load into any system, and **Recent changes** lists every offset change with Undo, or Restore for
+  an earlier state. Milo knows the systems' names. qtvcp's full offset table is under **Full table**.
 - **Probe**: start from what you want to find: a **corner** (outside or inside), an **edge**, the centre of a
   **hole** or **boss**, the **top surface**, a part's **angle**, or **tool length** (tool setter, touch plate).
   Tap the corner or edge on a picture, and the page says where to put the probe and draws exactly what it

@@ -113,6 +113,9 @@ class MachineModel(QtCore.QObject):
         # Work offset changes made from the screen, newest last: {time, label, wcs, offset, rotation}
         self.offset_history: List[dict] = []
         self.probe_tool: Optional[int] = None  # the touch probe's tool number (the spindle won't start with it)
+        self.g92 = [0.0, 0.0, 0.0]          # G92 shift (machine units), applies to every work system
+        self.tool_offset_z = 0.0            # the tool length offset in effect
+        self.tool_length_applied = False    # G43 is on
 
         self.file = ""
         self.line = 0
@@ -301,13 +304,61 @@ class MachineModel(QtCore.QObject):
         words = " ".join(f"{axis}{value:.6f}" for axis, value in values.items())
         if rotation is not None:
             words += f" R{rotation:.6f}"
-        number = WCS_NAMES.index(wcs) + 1
+        if not self._g10(f"G10 L2 P{WCS_NAMES.index(wcs) + 1} {words}"):
+            return False
+        current = self.current_offset(wcs)
+        if current is not None:
+            offset = list(current[0])
+            for axis, value in values.items():
+                offset["XYZ".index(axis)] = value
+            self._written(wcs, offset, current[1] if rotation is None else rotation)
+        return True
+
+    def set_origin_here(self, wcs: str, values: Dict[str, float], label: Optional[str] = None) -> bool:
+        """Move a work system's origin so the tool's position reads `values` there (G10 L20: 'zero here'),
+        for any system, active or not; remembers the old origin"""
+        if label and not self.remember_offsets(label, wcs):
+            self.message.emit("warning", f"Couldn't read {wcs} to keep an undo copy, so it wasn't changed.")
+            return False
+        current = self.current_offset(wcs)
+        words = " ".join(f"{axis}{value:.6f}" for axis, value in values.items())
+        if not self._g10(f"G10 L20 P{WCS_NAMES.index(wcs) + 1} {words}"):
+            return False
+        if current is not None:
+            # Where the interpreter puts it: machine position - tool length (Z) - G92 - the value
+            offset = list(current[0])
+            position = self.machine_position()
+            for axis, value in values.items():
+                i = "XYZ".index(axis)
+                offset[i] = position[i] - (self.tool_offset_z if axis == "Z" else 0.0) - self.g92[i] - value
+            self._written(wcs, offset, current[1])
+        return True
+
+    def _g10(self, line: str) -> bool:
         # G10 reads the program's units; offsets are in machine units
         units, restore = ("G21", "G20") if self.machine_metric else ("G20", "G21")
-        lines = [units, f"G10 L2 P{number} {words}"]
+        lines = [units, line]
         if self.metric != self.machine_metric:
             lines.append(restore)
         return self.mdi_lines(lines)
+
+    def _written(self, wcs: str, offset: List[float], rotation: float):
+        """A work offset this screen just wrote (subclasses use it until LinuxCNC reports it)"""
+
+    def machine_position(self) -> List[float]:
+        """The tool's machine position in machine units (pos_abs may be in program units)"""
+        k = 1.0 if self.metric == self.machine_metric else (25.4 if self.metric else 1 / 25.4)
+        return [v / k for v in (list(self.pos_abs) + [0.0, 0.0, 0.0])[:3]]
+
+    def all_offsets(self) -> Dict[str, Optional[Tuple[List[float], float]]]:
+        """Every work system's origin (machine units) and rotation, None where unknown"""
+        return {name: self.current_offset(name) for name in WCS_NAMES}
+
+    def clear_g92(self) -> bool:
+        return self.mdi("G92.1")
+
+    def apply_tool_length(self) -> bool:
+        return self.mdi("G43")
 
     def undo_offsets(self) -> Optional[dict]:
         """Put back the work offset from before the last change; returns that history entry"""
@@ -551,6 +602,10 @@ class QtvcpMachine(MachineModel):
         self._set("offsets", metric=s.program_units != 1 if s.program_units else self.machine_metric,
                   wcs=wcs if wcs in WCS_NAMES else "G54")
         self._sync_offsets_if_needed(s)
+        parts = machine_safety.offset_parts(s)
+        g92 = [round(v, 6) for v in (parts[1][:3] if parts else [0.0, 0.0, 0.0])]
+        self._set("offsets", g92=g92, tool_offset_z=round(float(s.tool_offset[2]), 6),
+                  tool_length_applied=any(code in s.gcodes for code in (430, 431, 432)))
         spindle = s.spindle[0]
         direction = int(spindle["direction"]) if spindle["enabled"] else 0
         self._set("spindle", spindle_requested=abs(float(spindle["speed"])), spindle_dir=direction)
@@ -743,10 +798,26 @@ class QtvcpMachine(MachineModel):
 
     def current_offset(self, wcs):
         stat = self.STATUS.stat
+        if not (machine_safety.offsets_synced(stat) and machine_safety.active_work_offset(stat) == wcs):
+            # LinuxCNC rewrites linuxcnc.var only now and then: until it does, what was just written wins
+            written = getattr(self, "_written_offsets", {}).get(wcs)
+            path = machine_safety._parameter_file(stat)
+            try:
+                stale = written is not None and (path is None or os.path.getmtime(path) <= written[2])
+            except OSError:
+                stale = written is not None
+            if stale:
+                return list(written[0]), written[1]
         offset = machine_safety.stored_work_offset(stat, wcs)
         if offset is None:
             return None
         return list(offset[:3]), machine_safety.stored_work_rotation(stat, wcs) or 0.0
+
+    def _written(self, wcs, offset, rotation):
+        if not hasattr(self, "_written_offsets"):
+            self._written_offsets = {}
+        self._written_offsets[wcs] = (list(offset), float(rotation), time.time())
+        self._emit("offsets")
 
     def mdi(self, command):
         if self.spindle_locked(command):
@@ -920,7 +991,8 @@ class SimMachine(MachineModel):
 
     def _update_rel(self):
         off = self.wcs_offsets.get(self.wcs, [0.0, 0.0, 0.0])
-        self.pos_rel = [p - o for p, o in zip(self.pos_abs, off)]
+        tool = [0.0, 0.0, self.tool_offset_z if self.tool_length_applied else 0.0]
+        self.pos_rel = [p - o - g - t for p, o, g, t in zip(self.pos_abs, off, self.g92, tool)]
 
     def _tick(self):
         now = time.time()
@@ -1090,11 +1162,24 @@ class SimMachine(MachineModel):
         """Pretend-move for G53 rapids (camera scans and moves in previews and tests), and G10 L2
         work offset changes"""
         words = line.upper().split()
-        if words[:2] == ["G10", "L2"] and len(words) > 2 and words[2].startswith("P"):
+        if words == ["G92.1"]:
+            self.g92 = [0.0, 0.0, 0.0]
+            self._update_rel()
+            self._emit("offsets")
+            return
+        if "G43" in words:
+            self.tool_offset_z, self.tool_length_applied = self.tool_length, True
+            self._emit("offsets")
+        if words[:2] in (["G10", "L2"], ["G10", "L20"]) and len(words) > 2 and words[2].startswith("P"):
             name = WCS_NAMES[int(float(words[2][1:])) - 1]
             for w in words[3:]:
                 if w[0] in "XYZ":
-                    self.wcs_offsets[name]["XYZ".index(w[0])] = float(w[1:])
+                    i = "XYZ".index(w[0])
+                    if words[1] == "L2":
+                        self.wcs_offsets[name][i] = float(w[1:])
+                    else:  # the tool's position reads this value
+                        tool = self.tool_offset_z if w[0] == "Z" else 0.0
+                        self.wcs_offsets[name][i] = self.pos_abs[i] - tool - self.g92[i] - float(w[1:])
                 elif w[0] == "R":
                     self.wcs_rotation[name] = float(w[1:])
             self._update_rel()

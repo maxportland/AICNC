@@ -396,6 +396,7 @@ def test_fixture_loads_can_be_undone(page, shell, tmp_path, monkeypatch):
     assert m.apply_offsets("G54", {"X": 10.0, "Y": 20.0, "Z": -30.0}, label="Load fixture vise")
     assert m.wcs_offsets["G54"] == pytest.approx([10.0, 20.0, -30.0])
     off_page.refresh()
-    assert off_page.undo_button.text() == "Undo last change: Load fixture vise (G54)"
-    off_page._undo()
+    newest = off_page.history_list.itemAt(0).widget()
+    assert "Load fixture vise" in [w.text() for w in newest.findChildren(type(off_page.status_text))]
+    off_page.undo()
     assert m.wcs_offsets["G54"] == pytest.approx(before)

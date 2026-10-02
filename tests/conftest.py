@@ -78,3 +78,10 @@ def qapp():
     # A full QApplication (offscreen) so tests can create widgets
     from PyQt5.QtWidgets import QApplication
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def isolated_fixtures(tmp_path, monkeypatch):
+    """Keep tests from touching the real fixtures.json (saved work origins)"""
+    from milo_ui.pages import offsets
+    monkeypatch.setattr(offsets, "FIXTURE_FILE", str(tmp_path / "fixtures.json"))

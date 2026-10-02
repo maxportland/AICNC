@@ -174,6 +174,8 @@ class MiloEngine:
         self.router_worker = None
         # The Probe page: prepare(request) -> (action, reason) and execute(action) -> log line
         self.probe_handler = None
+        # More machine context from the screen (e.g. the work systems' names), each a () -> str
+        self.context_providers = []
         self.router_history = []
         self.routing_request = None
         self.confirmation = None
@@ -397,7 +399,15 @@ class MiloEngine:
     def _machine_context(self):
         """Machine state for the router, plus the tool table and the tools' catalog data"""
         stat = self._stat()
-        return describe_machine(stat) + "\n" + self._tools_context(stat) + self._vision_suffix()
+        text = describe_machine(stat) + "\n" + self._tools_context(stat) + self._vision_suffix()
+        for provider in self.context_providers:
+            try:
+                extra = provider()
+            except Exception:
+                extra = ""
+            if extra:
+                text += "\n" + extra
+        return text
 
     def _tools_context(self, stat):
         """Every tool in tool.tbl, and vendor catalog data (rescaled to this spindle) for linked tools"""

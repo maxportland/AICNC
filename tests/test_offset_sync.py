@@ -112,18 +112,22 @@ def test_no_sync_while_moving_or_synced(machine, qapp):
     assert machine.ACTION.systems == []
 
 
-def test_fixture_saves_g54_from_the_file_before_sync(shell, unsynced, monkeypatch, tmp_path):
-    """Saving a fixture at startup must not store X0 Y0 Z0 (the unsynced status offset)"""
-    from milo_ui.pages import offsets
+def test_fixture_saves_g54_from_the_file_before_sync(machine, unsynced):
+    """Saving a fixture at startup must not store X0 Y0 Z0 (the unsynced status offset): the
+    machine reads G54 from linuxcnc.var until LinuxCNC reports it, and says None if it can't"""
+    assert machine.current_offset("G54")[0] == pytest.approx([230.0, 8.4858, -147.907333])
+    unsynced.ini_filename = ""  # no way to read G54
+    assert machine.current_offset("G54") is None
+
+
+def test_offsets_page_wont_save_an_unknown_origin(shell, monkeypatch):
     page = shell.pages["offsets"]
-    monkeypatch.setattr(page.machine, "stat", lambda: unsynced)
-    assert page._current_g54() == pytest.approx([230.0, 8.4858, -147.907333])
-    unsynced.ini_filename = ""  # no way to read G54: nothing is saved
-    monkeypatch.setattr(offsets, "FIXTURE_FILE", str(tmp_path / "fixtures.json"))
+    monkeypatch.setattr(page.machine, "current_offset", lambda wcs: None)
+    page.refresh()
     asked = []
     monkeypatch.setattr(shell, "ask_text", lambda *a, **k: asked.append(a))
-    page._save()
-    assert page._current_g54() is None and asked == []
+    page._save_fixture()
+    assert asked == []
 
 
 def test_sync_waits_for_homing_only_when_required(machine, qapp):

@@ -754,6 +754,8 @@ class MiloShell(QtWidgets.QWidget):
         self.engine = engine
         if "probe" in self.pages and hasattr(engine, "probe_handler"):
             engine.probe_handler = self.pages["probe"]
+        if "offsets" in self.pages and hasattr(engine, "context_providers"):
+            engine.context_providers.append(self.pages["offsets"].describe_for_milo)
         self.composer.set_ai_available(bool(engine.api_key()))
         if self.conversation is not None:
             self.conversation.set_show_details(engine.show_details)
