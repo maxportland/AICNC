@@ -108,8 +108,12 @@ def parallax_height(model: CameraModel, pixel_a, spindle_a, pixel_b, spindle_b,
 
 
 class TableMap:
-    def __init__(self, model: CameraModel, limits: Dict[str, Tuple[float, float]], px_per_mm: float = 2.0):
+    def __init__(self, model: CameraModel, limits: Dict[str, Tuple[float, float]], px_per_mm: float = 2.0,
+                 empty_table=None):
+        """empty_table: a background.EmptyTable; parts are then what changed from it"""
         self.model = model
+        self.empty_table = empty_table
+        self.found = None        # parts' outlines (shapely) after a finish(): later frames only add to them
         self.limits = limits
         self.px_per_mm = px_per_mm
         self.polygons = []       # (machine polygon ndarray, frame index)
@@ -141,8 +145,19 @@ class TableMap:
             masks.append(c + (tag.corners - c) * TAG_QUIET_ZONE)
             xy = m.pixel_to_machine([tag.center], spindle)[0]
             self.tag_sightings.setdefault(tag.id, []).append((float(xy[0]), float(xy[1])))
-        for blob in detect.find_stock(image, exclude=masks):
-            self.polygons.append((m.pixel_to_machine(blob.polygon, spindle), index))
+        empty = self.empty_table.view(spindle, image.shape) if self.empty_table is not None else None
+        if empty is not None:
+            blobs = detect.find_stock(image, exclude=masks, background=empty.background,
+                                      tolerance=empty.tolerance, valid=empty.valid)
+        elif self.empty_table is not None:
+            blobs = []  # a spot the empty-table photos never covered: brightness would find the table
+        else:
+            blobs = detect.find_stock(image, exclude=masks)
+        for blob in blobs:
+            poly = m.pixel_to_machine(blob.polygon, spindle)
+            if self.found is not None and not self._near_found(poly):
+                continue  # a closer look: it may only add to a part the scan already found
+            self.polygons.append((poly, index))
             self.observations.append((index, blob.polygon, spindle, blob.touches_border))
         # mosaic: warp the frame onto the table plane
         h, w = image.shape[:2]
@@ -154,6 +169,14 @@ class TableMap:
         warped = cv2.warpPerspective(frame, H, size)
         mask = cv2.warpPerspective(np.full((h, w), 255, np.uint8), H, size)
         self.mosaic[mask > 0] = warped[mask > 0]
+
+    def _near_found(self, poly) -> bool:
+        from shapely.geometry import Polygon
+        try:
+            shape = Polygon(poly).buffer(0)
+        except ValueError:
+            return False
+        return any(shape.intersects(piece) for piece in self.found)
 
     def finish(self) -> ScanResult:
         from shapely.geometry import Polygon
@@ -168,7 +191,7 @@ class TableMap:
                 shapes.append((shape.buffer(1.0), index))
         merged = unary_union([s for s, _ in shapes]) if shapes else None
         pieces = [] if merged is None else (list(merged.geoms) if hasattr(merged, "geoms") else [merged])
-        parts = []
+        parts, found = [], []
         for piece in pieces:
             piece = piece.buffer(-1.0)
             if piece.is_empty or piece.area < 25.0:
@@ -198,10 +221,13 @@ class TableMap:
             long_edge = edges[int(np.argmax(lengths))]
             angle = math.degrees(math.atan2(long_edge[1], long_edge[0]))
             angle = ((angle + 90) % 180) - 90
+            found.append(piece.buffer(2.0))
             parts.append(Part(center=(float(rect.centroid.x), float(rect.centroid.y)),
                               size=(max(lengths), min(lengths)), angle=angle,
                               corners=[(float(x), float(y)) for x, y in corners],
                               top_z=top, top_z_error=error, frames=len(seen)))
+        if self.found is None:
+            self.found = found
         tags = {tag_id: tuple(np.mean(points, axis=0).tolist()) for tag_id, points in self.tag_sightings.items()}
         mosaic, origin = self._cropped_mosaic()
         return ScanResult(parts=sorted(parts, key=lambda p: -p.size[0] * p.size[1]), tags=tags,

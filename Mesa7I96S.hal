@@ -12,7 +12,7 @@ setp    hm2_7i96s.0.watchdog.timeout_ns 5000000
 
 loadrt pid names=pid.x,pid.y,pid.z,pid.s,pid.a
 
-loadrt or2 names=probe-or
+loadrt or2 names=probe-or,laser-or
 
 addf hm2_7i96s.0.read          servo-thread
 addf motion-command-handler   servo-thread
@@ -241,9 +241,37 @@ net a-pos-fb     => joint.3.motor-pos-fb
 net a-enable     <= joint.3.amp-enable-out
 net a-enable     => hm2_7i96s.0.stepgen.03.enable
 
+# ---closed-loop driver (CL86Y) alarm and enable---
+# ALM -> 7i84 input 5: the driver alarms when the motor falls too far behind (the drawbar too tight
+# for CLAMP_TURNS, a jam) and the motor goes limp. That's a joint 3 amp fault, which turns the machine
+# off, so a clamp or release that didn't happen can't pass as done. If the machine faults as soon as
+# it's turned on, the alarm output is the other polarity: use input-05-not.
+net a-fault      <= hm2_7i96s.0.7i84.1.0.input-05
+net a-fault      => joint.3.amp-fault-in
+# ENA <- 7i84 output 7, on (driver disabled) while joint 3 isn't enabled. Turning the machine off
+# and on again toggles it, which resets an alarm (if the driver still alarms, cycle its power).
+# The CL86Y's ENA disables it when on: if the motor goes limp when the machine is on instead,
+# set this invert to false.
+net a-enable     => hm2_7i96s.0.7i84.1.0.output-07
+setp hm2_7i96s.0.7i84.1.0.output-07-invert true
+
 setp halui.joint.jog-speed 30
 setp joint.3.jog-scale 1.0
 setp joint.3.jog-enable TRUE
+
+# ---power drawbar lift---
+# The valve for the four cylinders that lower the drawbar motor onto the drawbar. Driven by
+# M64 P0 / M65 P0 (motion digital out 0), so the drawbar subroutines and the M6 remap can use it.
+# Which state lowers the motor is [DRAWBAR]LOWER_IS_ON in the INI.
+net drawbar-lift motion.digital-out-00 => hm2_7i96s.0.7i84.1.0.output-05
+
+# ---camera line laser---
+# The laser (VLM-650-28 LPT, 5V) is switched by the 7i96S's OUT0, a floating DC SSR:
+# TB1 +5VP -> TB3-14 OUT0+, TB3-13 OUT0- -> laser +, laser - -> TB1 GND. On from G-code
+# (M64 P1 / M65 P1) or from the screen (milo.laser, joined to laser-or.in1 in custom_postgui.hal).
+addf laser-or servo-thread
+net laser-gcode  motion.digital-out-01 => laser-or.in0
+net laser-on     laser-or.out => hm2_7i96s.0.ssr.00.out-00
 
 #*******************
 #  SPINDLE

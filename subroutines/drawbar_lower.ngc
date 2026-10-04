@@ -1,0 +1,11 @@
+; Lower the drawbar motor onto the drawbar (the four cylinders), and wait for it to get there.
+; Which state of M64/M65 P0 lowers it is [DRAWBAR]LOWER_IS_ON in the INI.
+o<drawbar_lower> sub
+o100 if [#<_ini[DRAWBAR]LOWER_IS_ON> EQ 1]
+  M64 P0
+o100 else
+  M65 P0
+o100 endif
+G4 P#<_ini[DRAWBAR]LOWER_TIME>
+o<drawbar_lower> endsub
+M2

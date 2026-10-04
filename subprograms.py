@@ -48,6 +48,12 @@ class SubPrograms(QObject):
         self.start_z = 0.0
         self.tool_number = 1
         self.z_offset = 0.0  # Add this
+        # Feed for the probing approach down to the start height: slow enough to stop within the
+        # setter's overtravel if a long tool touches it on the way down
+        try:
+            self.approach_vel = float(INFO.get_error_safe_setting("TOOL_SENSOR", "APPROACH_FEED", "600"))
+        except (TypeError, ValueError):
+            self.approach_vel = 600.0
 
         # output results
         self.status_z1 = 0.0
@@ -83,18 +89,14 @@ class SubPrograms(QObject):
                     # block polling here. main program should start polling in their end
                     STATUS.block_error_polling()
 
-                    # error = 1 means success, error = None means ignore, anything else is an error
-                    if error is not None:
-                        if error != 1:
-                            if type(error) == str:
-                                sys.stdout.write("Routine error: {}\n".format(error))
-                            else:
-                                sys.stdout.write("Returned with error from cmd:{}\n".format(cmd))
-                        else:
-                            self.collect_status()
-                            sys.stdout.write(self.string_to_send)
+                    # error = 1 means success (the screen looks for COMPLETE), anything else is an error
+                    if error == 1:
+                        self.collect_status()
+                        sys.stdout.write("COMPLETE$ {}\n".format(self.string_to_send))
+                    elif type(error) == str:
+                        sys.stdout.write("Routine error: {}\n".format(error))
                     else:
-                        sys.stdout.write("COMPLETE$ returned FROM COMMAND:{}\n".format(cmd))
+                        sys.stdout.write("Returned with error from cmd:{}\n".format(cmd))
                     sys.stdout.flush()
             except KeyboardInterrupt:
                     break
@@ -108,13 +110,19 @@ class SubPrograms(QObject):
         cmd = cmd.rstrip().split('$')
         if not STATUS.is_on_and_idle():
             LOG.warning(f"Machine is not ON and IDLE. Ignoring command.")
-            return None
+            return "The machine isn't on and idle: nothing was measured"
         pre = self.prechecks()
         if pre is not None:
             LOG.error(f"Prechecks failed: {pre}")
             return pre
 
         STATUS.unblock_error_polling()
+        try:
+            return self.run_command(cmd)
+        finally:
+            self.postreset()
+
+    def run_command(self, cmd):
         ACTION.CALL_MDI("G49")
         LOG.debug(f"COMMAND split: {cmd}")
         if cmd[0] == "toolsetter":
@@ -138,7 +146,6 @@ class SubPrograms(QObject):
         else:
             LOG.error(f"Unknown command: {cmd[0]}")
             return 'Most provide a command: ex: toolsetter'
-        self.postreset()
         return error
 
     def CALL_MDI_WAIT(self, code, timeout = 5):
@@ -191,14 +198,24 @@ class SubPrograms(QObject):
     # return to previous motion modes
     def postreset(self):
         LOG.debug(f"Resetting to previous motion modes.")
-        ACTION.CALL_MDI('M72')
+        rtn = self.CALL_MDI_WAIT(['M72', 'G43'], self.timeout)
+        if rtn != 1:
+            LOG.error(f"Restoring modes / G43 failed: {rtn}")
+
+    def move_timeout(self, distance, feed):
+        """Seconds to allow a feed move: its time at feed (mm or in per minute), plus 10"""
+        return max(self.timeout, abs(distance) / max(feed, 1e-6) * 60 + 10)
+
+    def probe_tripped(self):
+        STATUS.stat.poll()
+        return bool(STATUS.stat.probe_tripped)
 
     def toolsetter_routine(self):
         LOG.debug(f"Starting toolsetter routine")
 
         tool_number = int(self.tool_number)
         LOG.info(f"Tool number: {tool_number}")
-        if tool_number < 1 or tool_number > 99:
+        if tool_number < 1:
             LOG.error(f"Invalid tool number: {tool_number}")
             return f"Invalid tool number: {tool_number}"
         
@@ -209,20 +226,42 @@ class SubPrograms(QObject):
             return f"Tool change failed: {rtn}"
         LOG.debug(f"Tool change completed: T{tool_number} M6")
 
-        name = 'Probe Z 1st positioning'
-        LOG.info("Rapid jog to probing start position over toolsetter")
-        # Rapid jog to first probe position
+        # Up to the top of Z first, wherever the spindle is, then across to above the setter: never
+        # down where it is, or across low over the work
+        name = 'Move over the tool setter'
+        LOG.info("Rapid to the top of Z, then over the toolsetter")
         cmdList = [
             "G90",
-            f"G0 G53 Z{self.start_z + 20}",
+            "G0 G53 Z0",
             f"G0 G53 X{self.start_x} Y{self.start_y}",
-            f"G0 G53 Z{self.start_z}"
         ]
-        LOG.debug(f"Command list for first probe positioning: {cmdList}")
+        LOG.debug(f"Command list for positioning: {cmdList}")
         rtn = self.CALL_MDI_WAIT(cmdList, self.timeout)
         if rtn != 1:
             LOG.error(f"{name} failed: {rtn}")
             return f'{name} failed: {rtn}'
+
+        # Down to the start height as a probe move (G38.3: stops on contact, no error without), so a
+        # tool too long for the start height stops on the setter instead of rapiding into it
+        name = 'Approach the tool setter'
+        STATUS.stat.poll()
+        drop = self.start_z - STATUS.stat.actual_position[2]
+        if drop < 0:
+            cmd = f"G91 G38.3 Z{drop:.4f} F{self.approach_vel}"
+            LOG.info(f"Approaching the toolsetter: {cmd}")
+            rtn = self.CALL_MDI_WAIT([cmd], self.move_timeout(drop, self.approach_vel))
+            ACTION.CALL_MDI("G90")
+            if rtn != 1:
+                LOG.error(f"{name} failed: {rtn}")
+                return f'{name} failed: {rtn}'
+            if self.probe_tripped():
+                # Touched on the way down: back off, and search from there
+                LOG.info("Touched the toolsetter on the approach (a long tool): backing off")
+                rtn = self.CALL_MDI_WAIT([f"G91 G1 Z{self.retract_distance} F{self.search_vel}", "G90"],
+                                         self.move_timeout(self.retract_distance, self.search_vel))
+                if rtn != 1:
+                    LOG.error(f"{name} back-off failed: {rtn}")
+                    return f'{name} back-off failed: {rtn}'
 
         error = self.probe_down_to_toolsetter()
         ACTION.CALL_MDI("G90")
@@ -230,24 +269,27 @@ class SubPrograms(QObject):
             LOG.error(f"Probing failed: {error}")
             return error
 
-        s = f"G0 G53 Z{self.start_z}"
-        LOG.debug(f"Moving to safe Z position with command: {s}")
+        s = "G0 G53 Z0"
+        LOG.debug(f"Moving to the top of Z with command: {s}")
         rtn = self.CALL_MDI_WAIT([s], self.timeout)
         if rtn != 1:
             LOG.error(f"Probe {name} failed: {rtn}")
             return f'Probe {name} failed: {rtn}'
         
-        # Calculate tool length offset
-        # self.z_offset should be the known height of the tool setter in machine coordinates
-        # OR the probed position of a reference tool (tool 0)
+        # Tool length offset: the machine Z where this tool touched the setter, less a constant
+        # (self.z_offset: the setter height less the work height). A longer tool touches higher up
+        # and gets a larger offset, as G43 needs (LinuxCNC's own toolsetter routines do the same).
         tool_length_offset = self.status_z2 - self.z_offset
         
         LOG.info(f"Probed position: {self.status_z2}")
         LOG.info(f"Tool setter offset: {self.z_offset}")
         LOG.info(f"Calculated tool length offset: {tool_length_offset}")
 
-        # Set tool length offset - note the NEGATIVE value for typical setups
-        ACTION.CALL_MDI(f"G10 L1 P{tool_number} Z{-tool_length_offset}")
+        # Waited for, so it's in the tool table before G43 (postreset) and the screen's reload
+        rtn = self.CALL_MDI_WAIT([f"G10 L1 P{tool_number} Z{tool_length_offset:.4f}"], self.timeout)
+        if rtn != 1:
+            LOG.error(f"Setting the tool length failed: {rtn}")
+            return f"Setting the tool length failed: {rtn}"
 
         LOG.info(f"Toolsetter routine completed successfully.")
         return 1
@@ -261,7 +303,7 @@ class SubPrograms(QObject):
         ACTION.CALL_MDI("G91")
         cmd = f"G38.2 Z-{self.max_probe} F{self.search_vel}"
         LOG.info(f"Executing first probe down command: {cmd}")
-        rtn = self.CALL_MDI_WAIT([cmd], self.timeout)
+        rtn = self.CALL_MDI_WAIT([cmd], self.move_timeout(self.max_probe, self.search_vel))
         if rtn != 1:
             LOG.error(f"{name} failed: {rtn}")
             return f'{name} failed: {rtn}'
@@ -277,7 +319,7 @@ class SubPrograms(QObject):
         name = 'Probe retract'
         cmd = f"G1 Z{self.retract_distance} F{self.search_vel}"
         LOG.info(f"Executing probe retract command: {cmd}")
-        rtn = self.CALL_MDI_WAIT([cmd], self.timeout)
+        rtn = self.CALL_MDI_WAIT([cmd], self.move_timeout(self.retract_distance, self.search_vel))
         if rtn != 1:
             LOG.error(f"{name} failed: {rtn}")
             return f'{name} failed: {rtn}'
@@ -287,7 +329,7 @@ class SubPrograms(QObject):
         ACTION.CALL_MDI("G4 P0.5")
         cmd = f"G38.2 Z-{1.1 * self.retract_distance} F{self.probe_vel}"
         LOG.info(f"Executing second probe down command: {cmd}")
-        rtn = self.CALL_MDI_WAIT([cmd], self.timeout)
+        rtn = self.CALL_MDI_WAIT([cmd], self.move_timeout(1.1 * self.retract_distance, self.probe_vel) + 0.5)
         if rtn != 1:
             LOG.error(f"{name} failed: {rtn}")
             return f'{name} failed: {rtn}'

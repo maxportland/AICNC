@@ -1,4 +1,8 @@
 # Include your custom_postgui HAL commands here
 # This file will not be overwritten when you run PNCconf again
 
-net drawbar-lift milo.drawbar-lift hm2_7i96s.0.7i84.1.0.output-05
+# The drawbar lift valve (7i84 output 5) is driven by motion.digital-out-00 (M64/M65 P0) in
+# Mesa7I96S.hal, so G-code can run the drawbar. (It used to be the screen's milo.drawbar-lift.)
+
+# The camera's line laser: the screen's milo.laser, or'd with M64 P1 (see Mesa7I96S.hal)
+net laser-screen milo.laser => laser-or.in1

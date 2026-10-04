@@ -1,0 +1,14 @@
+; Turn the drawbar motor (the A axis): #1 turns, positive tightens, at #2 turns per second.
+; [DRAWBAR]TIGHTEN_DIRECTION says which way A tightens. Puts the distance mode and feed back after.
+; (Not M73: that would also put the spindle back on after the drawbar stopped it.)
+o<drawbar_turn> sub
+#<was_absolute> = #<_absolute>
+#<was_feed> = #<_feed>
+G91 G94
+G1 A[#1 * 360 * #<_ini[DRAWBAR]TIGHTEN_DIRECTION>] F[#2 * 360 * 60]
+o100 if [#<was_absolute> NE 0]
+  G90
+o100 endif
+F#<was_feed>
+o<drawbar_turn> endsub
+M2

@@ -1,0 +1,10 @@
+; Lift the drawbar motor off the drawbar, and wait for it to get there.
+o<drawbar_raise> sub
+o100 if [#<_ini[DRAWBAR]LOWER_IS_ON> EQ 1]
+  M65 P0
+o100 else
+  M64 P0
+o100 endif
+G4 P#<_ini[DRAWBAR]RAISE_TIME>
+o<drawbar_raise> endsub
+M2

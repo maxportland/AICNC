@@ -90,6 +90,9 @@ class CurrentTool(kit.Card):
         grid.setSpacing(12)
         self.change = kit.Button("Change tool…", icon="arrows-left-right", variant="primary", size="lg",
                                  on_click=lambda: self._ask_tool("Change to tool", m.change_tool,
+                                                                 "Runs T# M6 G43: the drawbar releases the tool, you "
+                                                                 "swap it and confirm, then it's clamped."
+                                                                 if m.drawbar_axis else
                                                                  "Runs T# M6 G43: you'll be asked to swap the tool."))
         self.set = kit.Button("Set tool in spindle…", icon="pencil-simple", size="lg",
                               on_click=lambda: self._ask_tool("Tool now in the spindle", m.set_tool,
@@ -107,18 +110,58 @@ class CurrentTool(kit.Card):
 
         self.add(kit.hline())
         drawbar = QtWidgets.QHBoxLayout()
+        drawbar.setSpacing(12)
         words = QtWidgets.QVBoxLayout()
         words.setSpacing(2)
         words.addWidget(kit.label("Power drawbar", "value", size=T.body, weight=theme.MEDIUM))
-        self.drawbar_state = kit.label("", "muted")
+        self.drawbar_state = kit.label("", "muted", wrap=True)
         words.addWidget(self.drawbar_state)
         drawbar.addLayout(words, 1)
-        self.drawbar = kit.Button("", icon="eject", size="lg", on_click=m.toggle_drawbar)
-        self.drawbar.setMinimumWidth(220)
-        drawbar.addWidget(self.drawbar)
+        self.release = kit.Button("Release tool", icon="eject", size="lg",
+                                  on_click=lambda: self._confirm_drawbar(
+                                      "Release the tool?", "The motor lowers onto the drawbar and undoes it: hold the "
+                                      "tool, it will be free.", m.drawbar_release))
+        self.clamp = kit.Button("Clamp tool", icon="lock-simple", size="lg",
+                                on_click=lambda: self._confirm_drawbar(
+                                    "Clamp the tool?", "The motor lowers onto the drawbar and does it up. Keep the "
+                                    "tool pushed fully into the spindle.", m.drawbar_clamp))
+        self.test_button = kit.Button("Test and set up", icon="sliders", variant="ghost", size="sm",
+                                      on_click=lambda: self.test_box.setVisible(not self.test_box.isVisible()))
+        for button in (self.release, self.clamp):
+            button.setMinimumWidth(200)
+            drawbar.addWidget(button)
         self.add(drawbar)
+        self.add(self.test_button)
+
+        # Commissioning: each step on its own, to check directions, turns and timing
+        self.test_box = QtWidgets.QWidget()
+        test = QtWidgets.QVBoxLayout(self.test_box)
+        test.setContentsMargins(0, 0, 0, 0)
+        test.setSpacing(8)
+        test.addWidget(kit.label(
+            "One step at a time, to set it up. Lower the motor and check it seats on the drawbar's square; turn a "
+            "turn each way and check Tighten tightens. Then set the turns, speeds, times and directions in "
+            "[DRAWBAR] in Mesa7I96S.ini (restart LinuxCNC after editing it).", "muted", wrap=True))
+        steps = QtWidgets.QGridLayout()
+        steps.setSpacing(10)
+        self.test_buttons = [
+            kit.Button("Lower motor", icon="arrow-line-down", variant="outline", on_click=m.drawbar_lower),
+            kit.Button("Raise motor", icon="arrow-line-up", variant="outline", on_click=m.drawbar_raise),
+            kit.Button("Tighten 1 turn", icon="arrow-clockwise", variant="outline", on_click=lambda: m.drawbar_turn(1)),
+            kit.Button("Loosen 1 turn", icon="arrow-counter-clockwise", variant="outline",
+                       on_click=lambda: m.drawbar_turn(-1)),
+        ]
+        for i, button in enumerate(self.test_buttons):
+            steps.addWidget(button, i // 2, i % 2)
+        test.addLayout(steps)
+        self.test_box.hide()
+        self.add(self.test_box)
         m.changed.connect(lambda topic: topic in ("tool", "state", "drawbar", "homing", "spindle") and self.refresh())
         self.refresh()
+
+    def _confirm_drawbar(self, title, text, action):
+        kit.ActionSheet(self, title, [("check", "Go", action, "warn"), ("x", "Cancel", lambda: None)],
+                        subtitle=text, width=520).show_centered()
 
     def _ask_tool(self, title, action, hint):
         kit.NumPad(self, title, lambda v: action(int(v)), initial=None, hint=hint).show_centered()
@@ -144,12 +187,24 @@ class CurrentTool(kit.Card):
         for button in (self.change, self.set, self.g43):
             button.setEnabled(ok)
         self.measure.setEnabled(ok and m.tool != 0)
-        self.drawbar.setText("Clamp tool" if m.drawbar else "Release tool")
-        self.drawbar.set_variant("warn" if m.drawbar else None)
-        self.drawbar_state.setText("Released: the tool is free" if m.drawbar else "Clamped")
-        # Only with the spindle commanded off and actually stopped
+        if not m.drawbar_axis:
+            self.drawbar_state.setText("Not set up ([DRAWBAR] in the INI)")
+        elif m.drawbar_lowered:
+            self.drawbar_state.setText("Motor down on the drawbar: the spindle won't start until it's raised")
+        elif m.drawbar:
+            self.drawbar_state.setText("Released: the tool is free, and the spindle won't start")
+        else:
+            self.drawbar_state.setText("Clamped (motor up)")
+        self.drawbar_state.setStyleSheet(f"color: {C.amber if (m.drawbar or m.drawbar_lowered) else C.text_3};")
+        self.release.set_variant(None if m.drawbar else "warn")
+        self.clamp.set_variant("primary" if m.drawbar else None)
+        # The drawbar runs as MDI subroutines: on, homed, idle, and the spindle stopped
         stopped = not m.spindle_dir and m.spindle_actual < 10
-        self.drawbar.setEnabled(not m.is_running and stopped and not m.estop)
+        usable = bool(m.drawbar_axis) and m.ready and stopped
+        for button in [self.release, self.clamp] + self.test_buttons:
+            button.setEnabled(usable)
+        self.test_buttons[1].setEnabled(bool(m.drawbar_axis) and m.ready)  # raising is always allowed
+        self.test_button.setVisible(bool(m.drawbar_axis))
 
 
 class ToolsPage(Page):

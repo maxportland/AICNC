@@ -1,0 +1,13 @@
+; Release the tool: stop the spindle, lower the motor onto the drawbar, ease the square onto it,
+; undo the drawbar, and lift the motor off. The tool is then free in the spindle.
+o<drawbar_release> sub
+o100 if [#<_spindle_on> NE 0]
+  M5
+  G4 P#<_ini[DRAWBAR]SPINDLE_STOP_TIME>
+o100 endif
+o<drawbar_lower> call
+o<drawbar_turn> call [0 - #<_ini[DRAWBAR]ENGAGE_TURNS>] [#<_ini[DRAWBAR]ENGAGE_SPEED>]
+o<drawbar_turn> call [0 - #<_ini[DRAWBAR]RELEASE_TURNS>] [#<_ini[DRAWBAR]TURN_SPEED>]
+o<drawbar_raise> call
+o<drawbar_release> endsub
+M2

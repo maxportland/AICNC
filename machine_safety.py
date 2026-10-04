@@ -153,7 +153,26 @@ def check_program_ready(stat) -> Optional[str]:
         return "No program is loaded."
     if not os.path.isfile(stat.file):
         return f"The loaded program file no longer exists: {stat.file}"
+    if drawbar_lowered(stat):
+        return "The drawbar motor is down on the drawbar. Raise it (Tools page) before running a program."
     return None
+
+
+def drawbar_axis(stat) -> str:
+    """The axis that turns the power drawbar (INI [DRAWBAR]AXIS), '' if there's none: not for the assistant"""
+    ini = _ini(stat)
+    axis = (ini.find("DRAWBAR", "AXIS") or "").strip().upper() if ini is not None else ""
+    return axis if axis in AXIS_LETTERS and stat.axis_mask & (1 << AXIS_LETTERS.index(axis)) else ""
+
+
+def drawbar_lowered(stat) -> bool:
+    """The drawbar motor is down on the drawbar (motion digital out 0, polarity [DRAWBAR]LOWER_IS_ON)"""
+    if not drawbar_axis(stat):
+        return False
+    ini = _ini(stat)
+    lower_is_on = (ini.find("DRAWBAR", "LOWER_IS_ON") or "1").strip() != "0"
+    dout = getattr(stat, "dout", ())
+    return bool(len(dout)) and bool(dout[0]) == lower_is_on
 
 
 # The touch probe's tool number (set by the Probe page): the spindle must never start with it in
@@ -221,6 +240,11 @@ def validate_mdi(command: str, stat) -> Optional[str]:
     for axis in seen_axes:
         if not stat.axis_mask & (1 << AXIS_LETTERS.index(axis)):
             return f"This machine has no {axis} axis."
+    if drawbar_axis(stat) in seen_axes:
+        return (f"{drawbar_axis(stat)} is the power drawbar's motor, not a machine axis. Use Release / Clamp tool "
+                "on the Tools page.")
+    if m_codes & {3, 4} and drawbar_lowered(stat):
+        return "The drawbar motor is down on the drawbar; the spindle won't start until it's raised."
 
     if m_codes & {3, 4} and PROBE_TOOL and stat.tool_in_spindle == PROBE_TOOL:
         return f"The touch probe (T{PROBE_TOOL}) is in the spindle; the spindle won't start with it."
@@ -563,7 +587,7 @@ def describe_machine(stat) -> str:
         units = "inch (G20)" if program_inch else "mm (G21)"
         # machine units -> program units
         to_prog = 1.0 / ((25.4 if program_inch else 1.0) * stat.linear_units)
-        axes = [a for i, a in enumerate(AXIS_LETTERS) if stat.axis_mask & (1 << i)]
+        axes = [a for i, a in enumerate(AXIS_LETTERS) if stat.axis_mask & (1 << i) and a != drawbar_axis(stat)]
 
         found = work_offsets(stat)
         offsets = found[0] if found else None

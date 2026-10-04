@@ -116,6 +116,7 @@ class MachineModel(QtCore.QObject):
         self.g92 = [0.0, 0.0, 0.0]          # G92 shift (machine units), applies to every work system
         self.tool_offset_z = 0.0            # the tool length offset in effect
         self.tool_length_applied = False    # G43 is on
+        self.laser_on = False               # the camera's line laser (screen side; G-code can also turn it on)
 
         self.file = ""
         self.line = 0
@@ -132,7 +133,10 @@ class MachineModel(QtCore.QObject):
 
         self.flood = False
         self.mist = False
-        self.drawbar = False
+        self.drawbar = False           # released (by the drawbar sequence): the tool is free
+        self.drawbar_lowered = False   # the motor is down on the drawbar
+        self.drawbar_axis = ""         # the A axis that turns it ("" if there's no power drawbar)
+        self.drawbar_turn_speed = 1.5  # turns per second for the test turns
         self.probe_tripped = False
 
         self.mdi_commands: List[Tuple[str, str]] = []  # (label, code) from the INI
@@ -257,7 +261,6 @@ class MachineModel(QtCore.QObject):
     def set_velocity_limit(self, units_per_min: float): raise NotImplementedError
     def toggle_flood(self): raise NotImplementedError
     def toggle_mist(self): raise NotImplementedError
-    def toggle_drawbar(self): raise NotImplementedError
     def open_program(self, path: str): raise NotImplementedError
     def set_wcs(self, name: str): raise NotImplementedError
     def reload_tool_table(self): raise NotImplementedError
@@ -270,13 +273,59 @@ class MachineModel(QtCore.QObject):
         return bool(self.probe_tool) and self.tool == self.probe_tool
 
     def spindle_locked(self, command: str = "M3") -> bool:
-        """True (with a warning) if this would start the spindle with the touch probe in it"""
+        """True (with a warning) if this would start the spindle with the touch probe in it, the
+        drawbar motor down on the drawbar, or the tool released"""
         from probe_jobs import starts_spindle
-        if self.probe_in_spindle and starts_spindle(command):
-            self.message.emit("warning", f"The touch probe (T{self.probe_tool}) is in the spindle: it won't start. "
-                                         "Load a cutting tool first.")
-            return True
-        return False
+        if not starts_spindle(command):
+            return False
+        if self.probe_in_spindle:
+            reason = f"The touch probe (T{self.probe_tool}) is in the spindle: it won't start. Load a cutting tool first."
+        elif self.drawbar_lowered:
+            reason = "The drawbar motor is down on the drawbar: the spindle won't start. Raise it first."
+        elif self.drawbar:
+            reason = "The tool is released (drawbar undone): the spindle won't start. Clamp the tool first."
+        else:
+            return False
+        self.message.emit("warning", reason)
+        return True
+
+    # --- the power drawbar (subroutines/drawbar_*.ngc, settings in the INI's [DRAWBAR]) ---------
+
+    def _drawbar_ready(self) -> bool:
+        if not self.drawbar_axis:
+            self.message.emit("warning", "There's no power drawbar set up ([DRAWBAR] in the INI).")
+            return False
+        if self.is_running:
+            self.message.emit("warning", "Not while a program is running.")
+            return False
+        if self.spindle_dir or self.spindle_actual > 10:
+            self.message.emit("warning", "Stop the spindle first.")
+            return False
+        return True
+
+    def drawbar_release(self) -> bool:
+        """Lower the motor, undo the drawbar, lift the motor: the tool is free"""
+        if not self._drawbar_ready() or not self.mdi("o<drawbar_release> call"):
+            return False
+        self._set("drawbar", drawbar=True)
+        return True
+
+    def drawbar_clamp(self) -> bool:
+        """Lower the motor, do the drawbar up, lift the motor: the tool is held"""
+        if not self._drawbar_ready() or not self.mdi("o<drawbar_clamp> call"):
+            return False
+        self._set("drawbar", drawbar=False)
+        return True
+
+    def drawbar_lower(self) -> bool:
+        return self._drawbar_ready() and self.mdi("o<drawbar_lower> call")
+
+    def drawbar_raise(self) -> bool:
+        return bool(self.drawbar_axis) and self.mdi("o<drawbar_raise> call")
+
+    def drawbar_turn(self, turns: float) -> bool:
+        """Turn the drawbar motor (positive tightens), for setting it up"""
+        return self._drawbar_ready() and self.mdi(f"o<drawbar_turn> call [{turns:g}] [{self.drawbar_turn_speed:g}]")
 
     # --- work offset history (undo) ---------------------------------------------------------
 
@@ -425,6 +474,12 @@ class MachineModel(QtCore.QObject):
             return True
         return self.mdi_lines(lines)
 
+    def set_laser(self, on: bool) -> bool:
+        """The line laser beside the camera (milo.laser, 7i96S OUT0): camera routines switch it.
+        Returns False if there's no way to switch it."""
+        self.laser_on = bool(on)
+        return True
+
     def at_position(self, x=None, y=None, z=None, tolerance=0.02) -> bool:
         """Stopped at a machine position (for step-by-step routines like a camera scan)"""
         target = (x, y, z)
@@ -459,6 +514,17 @@ class MachineModel(QtCore.QObject):
         for topic in topics:
             self.changed.emit(topic)
 
+    def _set(self, topic, **fields):
+        """Set attributes; emit `topic` if any of them changed"""
+        changed = False
+        for name, value in fields.items():
+            if getattr(self, name) != value:
+                setattr(self, name, value)
+                changed = True
+        if changed:
+            self.changed.emit(topic)
+        return changed
+
 
 class _ModelActions:
     """The qtvcp Action calls that action_controller uses, mapped onto a MachineModel"""
@@ -491,8 +557,8 @@ class QtvcpMachine(MachineModel):
         from qtvcp.core import Status, Action, Info, Tool
         self.STATUS, self.ACTION, self.INFO, self.TOOL = Status(), Action(), Info(), Tool()
         self.halcomp = halcomp
-        self._drawbar_pin = None
         self._probe_pin = None
+        self._laser_pin = None
         self._offset_sync_tried = False
         self._read_ini()
         self._connect()
@@ -503,7 +569,15 @@ class QtvcpMachine(MachineModel):
     def _read_ini(self):
         info = self.INFO
         coords = (info.get_error_safe_setting("TRAJ", "COORDINATES", "XYZ") or "XYZ").replace(" ", "")
-        self.axes = tuple(a for a in coords.upper() if a in "XYZABCUVW") or AXES
+        # The power drawbar's motor is an axis to LinuxCNC (so G-code can turn it) but not to the operator
+        drawbar = (info.get_error_safe_setting("DRAWBAR", "AXIS", "") or "").strip().upper()
+        self.drawbar_axis = drawbar if drawbar and drawbar in coords.upper() else ""
+        self.drawbar_lower_is_on = str(info.get_error_safe_setting("DRAWBAR", "LOWER_IS_ON", "1")).strip() != "0"
+        try:
+            self.drawbar_turn_speed = float(info.get_error_safe_setting("DRAWBAR", "TURN_SPEED", "1.5"))
+        except (TypeError, ValueError):
+            pass
+        self.axes = tuple(a for a in coords.upper() if a in "XYZABCUVW" and a != self.drawbar_axis) or AXES
         self.homed = {a: False for a in self.axes}
         self.pos_abs = [0.0] * len(self.axes)
         self.pos_rel = [0.0] * len(self.axes)
@@ -564,23 +638,14 @@ class QtvcpMachine(MachineModel):
     def make_pins(self, qhal):
         """HAL pins owned by the screen (called by the screen handler once HAL is available)"""
         try:
-            self._drawbar_pin = qhal.newpin("drawbar-lift", qhal.HAL_BIT, qhal.HAL_OUT)
             self._probe_pin = qhal.newpin("led-probe", qhal.HAL_BIT, qhal.HAL_IN)
             self._probe_pin.value_changed.connect(lambda v: self._set("state", probe_tripped=bool(v)))
+            # the line laser: or'd with M64 P1 in Mesa7I96S.hal / custom_postgui.hal
+            self._laser_pin = qhal.newpin("laser", qhal.HAL_BIT, qhal.HAL_OUT)
         except Exception as e:
             self.message.emit("warning", f"Could not create screen HAL pins: {e}")
 
     # --- state updates -----------------------------------------------------------------
-
-    def _set(self, topic, **fields):
-        changed = False
-        for name, value in fields.items():
-            if getattr(self, name) != value:
-                setattr(self, name, value)
-                changed = True
-        if changed:
-            self.changed.emit(topic)
-        return changed
 
     def _poll(self):
         s = self.STATUS.stat
@@ -612,6 +677,9 @@ class QtvcpMachine(MachineModel):
         self._set("overrides", feed_override=round(s.feedrate * 100), rapid_override=round(s.rapidrate * 100),
                   spindle_override=round(spindle["override"] * 100), velocity_limit=s.max_velocity * 60)
         self._set("coolant", flood=bool(s.flood), mist=bool(s.mist))
+        if self.drawbar_axis:
+            out = bool(s.dout[0]) if len(s.dout) else False  # M64/M65 P0: the lift valve
+            self._set("drawbar", drawbar_lowered=out == self.drawbar_lower_is_on)
         self._set("tool", tool=int(s.tool_in_spindle))
         feed = s.current_vel * 60
         if abs(feed - self.feed_rate) > 0.5:
@@ -852,6 +920,13 @@ class QtvcpMachine(MachineModel):
     def abort(self):
         self.ACTION.ABORT()
 
+    def set_laser(self, on):
+        if self._laser_pin is None:
+            return False
+        self._laser_pin.set(bool(on))
+        self.laser_on = bool(on)
+        return True
+
     def spindle_start(self, direction, rpm):
         if self.spindle_locked():
             return
@@ -880,14 +955,6 @@ class QtvcpMachine(MachineModel):
 
     def toggle_mist(self):
         self.ACTION.TOGGLE_MIST()
-
-    def toggle_drawbar(self):
-        if self._drawbar_pin is None:
-            self.message.emit("warning", "Drawbar output is not available")
-            return
-        state = not bool(self._drawbar_pin.get())
-        self._drawbar_pin.set(state)
-        self._set("drawbar", drawbar=state)
 
     def open_program(self, path):
         self.ACTION.OPEN_PROGRAM(path)
@@ -970,6 +1037,7 @@ class SimMachine(MachineModel):
         self.wcs_offsets = {name: [0.0, 0.0, 0.0] for name in WCS_NAMES}
         self.wcs_offsets["G54"] = [94.675, 84.35, -112.8375]
         self.wcs_rotation: Dict[str, float] = {}
+        self.drawbar_axis = "A"  # a power drawbar, like the real machine
         self.pos_abs = [212.5, 96.35, -64.2]
         self._update_rel()
         self.mdi_commands = [("Go to G54", "G0 Z0;X0 Y0"), ("Center machine", "G53 G0 Z-10;G53 G0 X250 Y87.5"),
@@ -1162,6 +1230,10 @@ class SimMachine(MachineModel):
         """Pretend-move for G53 rapids (camera scans and moves in previews and tests), and G10 L2
         work offset changes"""
         words = line.upper().split()
+        if words and words[0].startswith("O<DRAWBAR_"):
+            # The drawbar subroutines: lower/raise move the motor; the sequences end with it up
+            self._set("drawbar", drawbar_lowered=words[0] == "O<DRAWBAR_LOWER>")
+            return
         if words == ["G92.1"]:
             self.g92 = [0.0, 0.0, 0.0]
             self._update_rel()
@@ -1254,9 +1326,6 @@ class SimMachine(MachineModel):
         self.mist = not self.mist
         self._emit("coolant")
 
-    def toggle_drawbar(self):
-        self.drawbar = not self.drawbar
-        self._emit("drawbar")
 
     def open_program(self, path):
         self.file = path

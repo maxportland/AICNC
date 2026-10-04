@@ -62,7 +62,36 @@ This configuration provides a production-ready LinuxCNC setup optimized for a 3-
 - **X-Axis (Joint 0)**: Closed-loop stepper, 644 steps/mm
 - **Y-Axis (Joint 1)**: Closed-loop stepper, -646 steps/mm (reversed)
 - **Z-Axis (Joint 2)**: Closed-loop stepper, 644 steps/mm
-- **Drawbar (Joint 3)**: Open-loop stepper, 800 steps/unit. Not a machine axis (`trivkins coordinates=XYZ`); the drawbar button jogs it.
+- **Drawbar (Joint 3, the A axis)**: Closed-loop stepper (CL86Y driver) in degrees (A360 = one
+  turn; `STEP_SCALE` 1600/360 for the driver at 1600 pulses/turn). A coordinate (`trivkins coordinates=XYZA`) so G-code can turn it, but
+  not a machine axis to the operator: the screen hides it and Milo won't move it.
+
+### Power drawbar
+Four pneumatic cylinders (valve on 7I84 output 5, driven by `M64 P0` / `M65 P0` through
+`motion.digital-out-00`) lower the A motor onto the drawbar's square, and the motor undoes or does up the
+drawbar. Subroutines in `subroutines/` run it, reading their settings from **`[DRAWBAR]` in
+`Mesa7I96S.ini`** (polarity of the valve, which way tightens, release/clamp turns, speeds, engage turn,
+cylinder and spindle-stop times):
+- `o<drawbar_release> call` / `o<drawbar_clamp> call`: stop the spindle if needed, lower, ease the square on,
+  turn, raise. Clamping turns a little past tight: the closed-loop driver (CL86Y) pushes at its peak current,
+  which sets the torque. If the motor falls further behind than the driver's position error limit (a jam,
+  or `CLAMP_TURNS` too far past tight) the driver alarms: its ALM (7I84 input 5) is joint 3's amp fault, so
+  the machine turns off rather than carrying on with an unclamped tool. Its ENA is 7I84 output 7; turning
+  the machine off and on resets the alarm.
+- `o<drawbar_lower> call`, `o<drawbar_raise> call`, `o<drawbar_turn> call [turns] [turns per second]`
+  (positive tightens): single steps, for setting it up.
+- **M6** is remapped (`milo_m6.ngc`): Z up, release, the usual manual tool change prompt, clamp.
+- The **Tools** page has Release / Clamp tool and, under *Test and set up*, Lower / Raise motor and
+  Tighten / Loosen 1 turn for commissioning. The spindle (and programs) won't start while the motor is down
+  on the drawbar or the tool is released.
+
+Commissioning: set the driver to 1600 pulses/turn to match `STEP_SCALE`; turn the machine on (if it
+faults at once, use `input-05-not` for ALM; if the motor is limp, set `output-07-invert` false); in the
+CL86Y tuning software set the peak current for the clamp torque and the position error limit above
+`CLAMP_TURNS`' overshoot (e.g. 2000 counts for 0.25 turn); with no tool, **Lower motor** and
+check it seats (flip `LOWER_IS_ON` if it rises instead); **Tighten 1 turn** and check it tightens (flip
+`TIGHTEN_DIRECTION` if not); then set `RELEASE_TURNS` / `CLAMP_TURNS` and the times. Restart LinuxCNC
+after editing the INI.
 
 ### Spindle Control
 - **Type**: ±10 V analog speed command from the 7I83 (`analogout0`, direction via `mux2`), enabled by `spindle.0.on`
@@ -409,8 +438,12 @@ DEFAULT_SPINDLE_0_SPEED = 1000
 X = 5.446
 Y = 78.012
 Z = -130.00
-TOOL_SENSOR_HEIGHT = 66.43
+APPROACH_FEED = 600
 ```
+Measuring a tool goes to the top of Z, across to the setter, down to `Z` as a probe move at
+`APPROACH_FEED` (a tool too long for that start height stops on the setter instead of hitting it), searches
+down and probes slowly, writes the length (a longer tool gets a larger offset) and turns G43 back on. The
+speeds, search distance, setter height and work height are screen settings on the Probe page.
 
 ### HAL Configuration
 
@@ -534,7 +567,7 @@ The XHC-WHB04B-6 wireless pendant provides:
   - Check the LinuxCNC console output for errors from `milo_handler.py`
   - The toolpath preview needs OpenGL; the rest of the screen works without it
 
-**Problem**: HAL pins not found (`milo.led-probe`, `milo.drawbar-lift`)
+**Problem**: HAL pins not found (`milo.led-probe`)
 - **Solution**: the screen's HAL component is named `milo`; `qtvcp_postgui.hal` and `custom_postgui.hal` use it
 
 ### Performance Issues

@@ -22,7 +22,8 @@ from milo_vision import geometry, scan as scanning, state as vstate
 from milo_vision.geometry import CameraModel
 from milo_vision.heightmap import HeightMap
 from milo_vision.probe_plan import ProbeSettings, probe_program
-from milo_vision import calibration, detect
+from milo_vision import calibration, detect, laser
+from milo_vision.background import EmptyTable, PHOTO_OVERLAP
 
 PROBE_DIR = os.path.expanduser("~/linuxcnc/nc_files/milo")
 
@@ -104,6 +105,9 @@ class VisionPage(Page):
         self.selected = 0
         self.runner: Optional[StepRunner] = None
         self.live_frame = None
+        self.live_laser = None     # (rows per column, laser-off frame) while the laser toggle is on
+        self.empty_dir = os.path.join(vision_dir, "empty")
+        self._empty_cache = (None, None, None)  # (model id, index mtime, EmptyTable)
 
         row = QtWidgets.QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
@@ -128,6 +132,9 @@ class VisionPage(Page):
         self.status_card.add(self.status_text)
         status_buttons = QtWidgets.QHBoxLayout()
         status_buttons.addWidget(kit.Button("Calibrate…", icon="crosshair", on_click=self._calibrate))
+        self.laser_button = kit.Button("Laser", icon="line-segment", checkable=True,
+                                       on_click=self._toggle_laser)
+        status_buttons.addWidget(self.laser_button)
         status_buttons.addWidget(kit.Button("Hardware guide", icon="info", variant="ghost",
                                             on_click=self._guide))
         self.status_card.add(status_buttons)
@@ -137,6 +144,8 @@ class VisionPage(Page):
         self.scan_button = kit.Button("Scan the table", icon="frame-corners", variant="primary", size="lg",
                                       on_click=self._ask_scan)
         scan_card.add(self.scan_button)
+        self.empty_button = kit.Button("Photograph the empty table", icon="camera", on_click=self._ask_empty)
+        scan_card.add(self.empty_button)
         self.scan_progress = QtWidgets.QProgressBar()
         self.scan_progress.setRange(0, 100)
         self.scan_progress.hide()
@@ -178,9 +187,11 @@ class VisionPage(Page):
             return self.camera
         try:
             if type(self.machine).__name__ == "SimMachine":
-                from milo_vision.cameras import SimCamera
+                from milo_vision.cameras import SimCamera, SimScene
                 truth = CameraModel(rotation=1.5, offset_x=58.0, offset_y=-12.0, calibrated=True)
-                self.camera = SimCamera(truth, lambda: self.machine.pos_abs)
+                # like this machine: mono camera, bright fixture plate, a switchable line laser
+                self.camera = SimCamera(truth, lambda: self.machine.pos_abs, SimScene.fixture_plate(truth.table_z),
+                                        mono=True, laser=lambda: self.machine.laser_on)
             else:
                 from milo_vision.cameras import open_camera
                 self.camera = open_camera("auto")
@@ -198,15 +209,84 @@ class VisionPage(Page):
 
     def hideEvent(self, event):
         self._live_timer.stop()
+        self._laser_off()
         super().hideEvent(event)
 
     def _grab_live(self):
         if self.mode.index() != 1 or self.runner is not None or not self.isVisible():
             return
         cam = self._ensure_camera()
-        if cam is not None:
+        if cam is None:
+            return
+        if self.laser_button.isChecked():
+            # laser off, then on: the line is what changed (works on the bright table and the mono camera)
+            on, off = laser.capture_pair(cam, self.machine.set_laser, settle_frames=1)
+            if on is None or off is None:
+                return
+            self.live_frame = on
+            self.live_laser = (laser.extract_line(on, background=off), off)
+        else:
             self.live_frame = cam.grab()
-            self.refresh_view()
+            self.live_laser = None
+        self.refresh_view()
+
+    # --- the line laser and the empty table ------------------------------------------------------------
+
+    def _toggle_laser(self):
+        if not self.laser_button.isChecked():
+            return self._laser_off()
+        if not self.machine.set_laser(False):
+            self.laser_button.setChecked(False)
+            return self.shell.toaster.show("The screen can't switch the laser (no milo.laser HAL pin).", "warning")
+        self.mode.set_index(1)
+        self.refresh_view()
+
+    def _laser_off(self):
+        if self.laser_button.isChecked():
+            self.laser_button.setChecked(False)
+        self.live_laser = None
+        self.machine.set_laser(False)
+
+    def empty_table(self) -> Optional[EmptyTable]:
+        """The photo of the empty table, re-stitched when the calibration changes"""
+        index = os.path.join(self.empty_dir, "index.json")
+        try:
+            mtime = os.path.getmtime(index)
+        except OSError:
+            return None
+        model_id, cached_mtime, cached = self._empty_cache
+        if model_id != id(self.model) or cached_mtime != mtime:
+            cached = EmptyTable.load(self.empty_dir, self.model)
+            self._empty_cache = (id(self.model), mtime, cached)
+        return cached
+
+    def _ask_empty(self):
+        views = scanning.plan_scan(self.machine.limits, self.model, self._scan_z(), overlap=PHOTO_OVERLAP)
+        kit.ActionSheet(self, "Photograph the empty table?", [
+            ("play-fill", "Start", lambda: self._photograph_empty(views), "warn"),
+            ("x", "Cancel", lambda: None),
+        ], subtitle=f"Clear everything off the table that isn't always there (parts, loose clamps), and leave "
+                    f"the vise and fixtures that stay. The head goes up to machine Z {self._scan_z():g}, then "
+                    f"photographs the table from {len(views)} spots. Scans then find what's changed since. "
+                    "Do it again after changing the camera height, the lighting or the fixtures.",
+                    width=640).show_centered()
+
+    def _photograph_empty(self, views):
+        self._laser_off()
+        self.machine.set_laser(False)
+        self._empty_frames = []
+        self._run(views, lambda image, spindle: self._empty_frames.append((spindle, image)), self._empty_done)
+
+    def _empty_done(self, ok, message):
+        self.runner = None
+        self._end_scan()
+        if not ok:
+            return self.shell.toaster.show(f"Stopped: {message}. The empty-table photo wasn't changed.", "warning")
+        EmptyTable(self.model, self._empty_frames).save(self.empty_dir)
+        self._empty_cache = (None, None, None)
+        self.shell.toaster.show(f"Empty table photographed from {len(self._empty_frames)} spots. "
+                                "Scans now find what's changed.", "success")
+        self.refresh()
 
     # --- display ------------------------------------------------------------------------------------
 
@@ -224,9 +304,18 @@ class VisionPage(Page):
                          f"at scan height")
         else:
             lines.append(f"<span style='color:{C.amber}'>Not calibrated</span>: positions are rough until you calibrate")
+        empty = self.empty_table()
+        if empty is not None:
+            lines.append(f"Empty table photographed {time.strftime('%b %d %H:%M', time.localtime(empty.taken_at))}: "
+                         "scans find what's changed")
+        else:
+            lines.append(f"<span style='color:{C.amber}'>No photo of the empty table</span>: parts are found by being "
+                         "brighter than a dark table, which a bright table defeats")
         self.status_text.setText("<br>".join(lines))
         ready = m.on and not m.estop and m.all_homed and not m.is_running and self.runner is None
         self.scan_button.setEnabled(ready and cam is not None)
+        self.empty_button.setEnabled(ready and cam is not None)
+        self.laser_button.setEnabled(cam is not None and self.runner is None)
         self.probe_button.setEnabled(bool(self.result and self.result.parts) and self.runner is None)
 
     def refresh_parts(self):
@@ -259,7 +348,16 @@ class VisionPage(Page):
                 return
             tags = detect.find_tags(frame)
             masks = [np.asarray(t.center) + (t.corners - np.asarray(t.center)) * scanning.TAG_QUIET_ZONE for t in tags]
-            blobs = detect.find_stock(frame, exclude=masks)
+            empty = self.empty_table()
+            view = empty.view(self.machine.pos_abs[:3], frame.shape) if empty is not None else None
+            if view is not None:
+                blobs = detect.find_stock(frame, exclude=masks, background=view.background,
+                                          tolerance=view.tolerance, valid=view.valid)
+            elif empty is not None:
+                blobs = []  # outside what the empty-table photos covered
+            else:
+                blobs = detect.find_stock(frame, exclude=masks)
+            line = self.live_laser[0] if self.live_laser is not None else None
 
             def overlay(p, at, scale):
                 p.setPen(QtGui.QPen(QtGui.QColor(C.accent_2), 2))
@@ -268,12 +366,28 @@ class VisionPage(Page):
                 p.setPen(QtGui.QPen(QtGui.QColor(C.amber), 2))
                 for tag in tags:
                     p.drawPolygon(QtGui.QPolygonF([at(*pt) for pt in tag.corners]))
+                if line is not None:
+                    p.setPen(QtGui.QPen(QtGui.QColor(C.green), 2))
+                    cols = np.nonzero(np.isfinite(line))[0]
+                    for a, b in zip(cols[:-1:4], cols[4::4]):
+                        if b - a <= 8:  # don't bridge gaps
+                            p.drawLine(at(a, line[a]), at(b, line[b]))
                 c = at(self.model.cx, self.model.cy)
                 p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 120), 1))
                 p.drawLine(QtCore.QPointF(c.x() - 14, c.y()), QtCore.QPointF(c.x() + 14, c.y()))
                 p.drawLine(QtCore.QPointF(c.x(), c.y() - 14), QtCore.QPointF(c.x(), c.y() + 14))
             self.canvas.set_image(to_qimage(frame), overlay)
-            self.caption.setText(f"{len(blobs)} bright region(s), {len(tags)} marker(s) in view")
+            what = "change(s) from the empty table" if empty is not None else "bright region(s)"
+            caption = f"{len(blobs)} {what}, {len(tags)} marker(s) in view"
+            if line is not None:
+                found = np.isfinite(line)
+                if found.sum() < 10:
+                    caption += (" · laser line not found: is the laser switched by OUT0 (not always on), "
+                                "and pointed into the view?")
+                else:
+                    caption += (f" · laser line (green) in {100 * found.mean():.0f}% of columns, "
+                                f"row {np.nanmedian(line):.0f} (image centre {self.model.cy:.0f})")
+            self.caption.setText(caption)
             return
         self._live_timer.stop()
         r = self.result
@@ -329,9 +443,20 @@ class VisionPage(Page):
     def _scan_z(self):
         return min(0.0, float(self.shell.prefs.get("vision.scan_z", 0.0)))
 
+    def _scan_views(self):
+        """The spots the empty table was photographed from (each frame then has its exact
+        background), or a plain grid"""
+        empty = self.empty_table()
+        if empty is not None and empty.covers(self._scan_z()):
+            return list(empty.positions)
+        return scanning.plan_scan(self.machine.limits, self.model, self._scan_z())
+
     def _ask_scan(self):
-        m = self.machine
-        views = scanning.plan_scan(m.limits, self.model, self._scan_z())
+        views = self._scan_views()
+        empty = self.empty_table()
+        if empty is not None and not empty.covers(self._scan_z()):
+            self.shell.toaster.show("The empty table was photographed at a different camera height: photograph it "
+                                    "again for reliable results.", "warning", seconds=8)
         kit.ActionSheet(self, "Scan the table?", [
             ("play-fill", "Start scan", lambda: self._scan(views), "warn"),
             ("x", "Cancel", lambda: None),
@@ -339,7 +464,8 @@ class VisionPage(Page):
                     f"the table (plus two per part found). The spindle must be stopped.", width=600).show_centered()
 
     def _scan(self, views):
-        self.table_map = scanning.TableMap(self.model, self.machine.limits)
+        self._laser_off()
+        self.table_map = scanning.TableMap(self.model, self.machine.limits, empty_table=self.empty_table())
         self._refined = False
         self._run(views, self.table_map.add_frame, self._scan_done)
 
@@ -360,11 +486,15 @@ class VisionPage(Page):
             self._end_scan()
             return self.shell.toaster.show(f"Scan stopped: {message}", "warning")
         first = self.table_map.finish()
-        if not self._refined and first.parts:
-            # a closer look at each part from both sides gives its height by parallax
+        # a closer look at each part from both sides gives its height by parallax. Not against the
+        # empty table: the grid already saw each part whole twice, and a spot it didn't photograph
+        # can only be compared with the re-projected mosaic, where a tall vise lands in the wrong
+        # place and skews the height (an unknown height is safe: the probe program measures the top)
+        unknown = [] if self.table_map.empty_table is not None else first.parts
+        if not self._refined and unknown:
             self._refined = True
             views = []
-            for part in first.parts[:4]:
+            for part in unknown[:4]:
                 views += scanning.refine_views(part.center, self.model, self._scan_z(), self.machine.limits)
             return self._run(views, self.table_map.add_frame, self._scan_done)
         self.result = first

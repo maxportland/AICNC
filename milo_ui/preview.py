@@ -207,7 +207,13 @@ def main():
         vision = shell.pages["vision"]
         vision.on_show()
         from milo_vision import scan as scanning
-        vision._scan(scanning.plan_scan(machine.limits, vision.model, vision._scan_z()))
+        from milo_vision.cameras import SimCamera, sim_empty_table
+        if isinstance(vision.camera, SimCamera):
+            # the sim table is a bright fixture plate: scans need a photo of it empty
+            from milo_vision.background import PHOTO_OVERLAP
+            grid = scanning.plan_scan(machine.limits, vision.model, vision._scan_z(), overlap=PHOTO_OVERLAP)
+            sim_empty_table(vision.camera, grid, vision.model).save(vision.empty_dir)
+        vision._scan(vision._scan_views())
     if args.shot:
         import time as _time
         end = _time.time() + args.wait

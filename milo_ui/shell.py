@@ -805,6 +805,9 @@ class MiloShell(QtWidgets.QWidget):
             return self.toaster.show("Load a program first.", "warning")
         if not m.ready:
             return self.toaster.show(m.state_detail or "The machine isn't ready.", "warning")
+        if m.drawbar_lowered or m.drawbar:
+            return self.toaster.show("The drawbar motor is down on the drawbar." if m.drawbar_lowered else
+                                     "The tool is released: clamp it first (Tools page).", "warning")
         if m.probe_in_spindle:
             from probe_jobs import spins_before_tool_change
             try:

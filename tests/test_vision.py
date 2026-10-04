@@ -233,15 +233,171 @@ def test_vision_page_scans_the_simulated_table(qapp, tmp_path, monkeypatch):
     page = shell.pages["vision"]
     page.model = TRUTH  # as if calibrated
     page.on_show()
-    page._scan(scan.plan_scan(m.limits, page.model, page._scan_z()))
-    timer = QtCore.QElapsedTimer()
-    timer.start()
-    while (page.runner is not None or page.result is None) and timer.elapsed() < 60000:
-        QApplication.processEvents()
-        QtCore.QThread.msleep(10)
+    from milo_vision.background import PHOTO_OVERLAP
+    views = scan.plan_scan(m.limits, page.model, page._scan_z(), overlap=PHOTO_OVERLAP)
+
+    def wait(done):
+        timer = QtCore.QElapsedTimer()
+        timer.start()
+        while not done() and timer.elapsed() < 60000:
+            QApplication.processEvents()
+            QtCore.QThread.msleep(10)
+
+    # The sim table is a bright fixture plate, like the real one: photograph it empty first (the
+    # block taken off), through the page's own routine
+    assert page.empty_table() is None
+    objects = page.camera.scene.objects
+    page.camera.scene.objects = [o for o in objects if o.label != "aluminium block"]
+    page._photograph_empty(views)
+    wait(lambda: page.runner is None)
+    page.camera.scene.objects = objects
+    assert page.empty_table() is not None and len(page.empty_table().frames) == len(views)
+    assert np.allclose(page._scan_views(), views, atol=1e-3)   # scans revisit the photographed spots
+    page._scan(page._scan_views())
+    wait(lambda: page.runner is None and page.result is not None)
     assert page.result is not None and len(page.result.parts) == 1
     assert page.result.parts[0].top_z == pytest.approx(-195.0, abs=1.5)
     assert os.path.exists(os.path.join(page.vision_dir, "heightmap.npz"))
     page._make_probe_program()
     assert m.file.startswith(str(tmp_path)) and "probe_part_" in m.file
     shell.close()
+
+
+# --- the line laser on this machine: mono camera, bright fixture plate -----------------------------
+
+def _sim(scene, mono=True, at=(0.0, 0.0, 0.0)):
+    pos, state = list(at), {"laser": False}
+    cam = SimCamera(TRUTH, lambda: pos, scene, mono=mono, laser=lambda: state["laser"])
+    return cam, pos, lambda on: state.__setitem__("laser", bool(on))
+
+
+def test_capture_pair_throws_away_frames_in_flight_and_leaves_the_laser_off():
+    log, state = [], {"laser": False}
+
+    class Cam:
+        def grab(self):
+            log.append(state["laser"])
+            return np.full((4, 4), 200 if state["laser"] else 10, np.uint8)
+
+    on, off = laser.capture_pair(Cam(), lambda v: state.__setitem__("laser", v), settle_frames=2)
+    assert log == [False] * 3 + [True] * 3 and on[0, 0] == 200 and off[0, 0] == 10
+    assert state["laser"] is False
+
+
+def test_laser_line_on_a_mono_camera_over_the_bright_plate():
+    scene = SimScene.fixture_plate(TRUTH.table_z)
+    scene.objects = []
+    cam, pos, set_laser = _sim(scene)
+    spindle = (300.0, 90.0, 0.0)
+    pos[:] = spindle
+    on, off = laser.capture_pair(cam, set_laser)
+    assert laser.is_mono(on)
+    # the colour method sees nothing on a mono camera; the laser-off difference finds the whole line
+    assert np.isfinite(laser.extract_line(on, colour="red")).sum() == 0
+    rows = laser.extract_line(on, background=off)
+    assert np.isfinite(rows).mean() > 0.95
+    y = cam.laser_y(spindle, TRUTH.table_z)
+    expected = TRUTH.machine_to_pixel([(TRUTH.offset_x + spindle[0], y)], spindle, TRUTH.table_z)[0][1]
+    assert np.nanmedian(rows) == pytest.approx(expected, abs=0.5)
+
+
+def test_saturated_wide_line_gives_its_middle():
+    img = np.zeros((100, 30), np.uint8)
+    img[40:52, :] = 255            # flat-topped, 12 rows wide
+    img[39, :] = img[52, :] = 120
+    assert np.nanmean(laser.extract_line(img)) == pytest.approx(45.5, abs=0.1)
+
+
+def test_laser_heights_with_the_exact_model():
+    """Calibrate on the bare plate and a 20 mm gauge, then measure the 45 mm block: the straight-line
+    model reads it a few mm out, the perspective model to a few tenths (the sim's line is anti-aliased)"""
+    spindle = (152.0, 97.0, 0.0)   # camera over the block, the line across it
+    def rows_for(objects):
+        scene = SimScene.fixture_plate(TRUTH.table_z)
+        scene.objects = objects
+        cam, pos, set_laser = _sim(scene)
+        pos[:] = spindle
+        on, off = laser.capture_pair(cam, set_laser)
+        return laser.extract_line(on, background=off)
+    from milo_vision.cameras import SimObject
+    plate = [(-500, -500), (1500, -500), (1500, 700), (-500, 700)]
+    table = rows_for([])
+    gauge = rows_for([SimObject(plate, TRUTH.table_z + 20.0, (180, 180, 180), "gauge")])
+    distance = TRUTH.distance(spindle[2], TRUTH.table_z)
+    exact = laser.calibrate(table, TRUTH.table_z, gauge, TRUTH.table_z + 20.0, distance=distance)
+    linear = laser.calibrate(table, TRUTH.table_z, gauge, TRUTH.table_z + 20.0)
+    demo = rows_for(SimScene.demo(TRUTH.table_z).objects)
+    block_cols = slice(700, 760)   # columns over the middle of the block
+    top = TRUTH.table_z + 45.0
+    assert np.nanmedian(laser.heights(demo, exact)[block_cols]) == pytest.approx(top, abs=0.3)
+    assert abs(np.nanmedian(laser.heights(demo, linear)[block_cols]) - top) > 2.0
+    assert np.nanmedian(laser.heights(table, exact)) == pytest.approx(TRUTH.table_z, abs=0.05)
+    again = laser.LaserCalibration.from_dict(exact.to_dict())
+    assert np.nanmedian(laser.heights(demo, again)[block_cols]) == pytest.approx(top, abs=0.3)
+
+
+# --- parts on the bright plate: what changed from the empty table ------------------------------------
+
+def _plate_scan(empty_table):
+    """As the page does it: the empty table's spots, then closer looks only where the height is unknown"""
+    pos = [0.0, 0.0, 0.0]
+    cam = SimCamera(TRUTH, lambda: pos, SimScene.fixture_plate(TRUTH.table_z), mono=True)
+    table = scan.TableMap(TRUTH, LIMITS, empty_table=empty_table)
+    views = empty_table.positions if empty_table is not None else scan.plan_scan(LIMITS, TRUTH, -60.0)
+    for view in views:
+        pos[:] = view
+        table.add_frame(cam.grab(), view)
+    for part in table.finish().parts:
+        if empty_table is not None:
+            break
+        for view in scan.refine_views(part.center, TRUTH, -60.0, LIMITS):
+            pos[:] = view
+            table.add_frame(cam.grab(), view)
+    return table.finish(), cam
+
+
+def test_scan_on_the_bright_plate_finds_the_block_against_the_empty_table(tmp_path):
+    from milo_vision.cameras import sim_empty_table
+    from milo_vision.background import EmptyTable
+    cam = SimCamera(TRUTH, lambda: (0, 0, 0), SimScene.fixture_plate(TRUTH.table_z), mono=True)
+    from milo_vision.background import PHOTO_OVERLAP
+    empty = sim_empty_table(cam, scan.plan_scan(LIMITS, TRUTH, -60.0, overlap=PHOTO_OVERLAP), TRUTH)
+    empty.save(str(tmp_path / "empty"))
+    empty = EmptyTable.load(str(tmp_path / "empty"), TRUTH)
+    result, _ = _plate_scan(empty)
+    assert len(result.parts) == 1        # the block; the vise was there when the table was photographed
+    part = result.parts[0]
+    assert part.center == pytest.approx((210.4, 85.0), abs=0.6)
+    assert part.size == pytest.approx((76.2, 47.6), abs=0.8)
+    assert part.top_z == pytest.approx(-195.0, abs=1.5)
+
+
+def test_brightness_alone_finds_the_plate_not_the_block():
+    result, _ = _plate_scan(None)
+    sizes = [p.size for p in result.parts]
+    assert not any(abs(w - 76.2) < 1 and abs(h - 47.6) < 1 for w, h in sizes)
+
+
+def test_empty_table_views_line_up(tmp_path):
+    from milo_vision.cameras import sim_empty_table
+    cam = SimCamera(TRUTH, lambda: (0, 0, 0), SimScene.fixture_plate(TRUTH.table_z), mono=True, noise=0)
+    views = scan.plan_scan(LIMITS, TRUTH, -60.0)
+    empty = sim_empty_table(cam, views, TRUTH, without=("aluminium block", "vise fixed jaw", "vise moving jaw"))
+    exact = empty.view(views[0], (TRUTH.height, TRUTH.width))
+    assert exact.tolerance == 2 and exact.valid.all()
+    # a spot between the photos: the mosaic re-projected matches what the camera sees there
+    spot = ((views[0][0] + views[1][0]) / 2, views[0][1] + 7.0, -60.0)
+    projected = empty.view(spot, (TRUTH.height, TRUTH.width))
+    assert projected.tolerance == 6 and projected.valid.mean() > 0.8
+    actual = SimCamera(TRUTH, lambda: spot, empty_scene_of(cam), mono=True, noise=0).grab()[..., 0]
+    known = projected.valid > 0
+    assert np.median(np.abs(actual[known].astype(int) - projected.background[known].astype(int))) <= 3
+    # and nothing there counts as a part
+    from milo_vision import detect
+    assert detect.find_stock(actual, background=projected.background, tolerance=projected.tolerance,
+                             valid=projected.valid) == []
+
+
+def empty_scene_of(cam):
+    from dataclasses import replace
+    return replace(cam.scene, objects=[])

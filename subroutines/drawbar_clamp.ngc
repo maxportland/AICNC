@@ -1,0 +1,14 @@
+; Clamp the tool: stop the spindle, lower the motor onto the drawbar, ease the square onto it,
+; do the drawbar up (CLAMP_TURNS goes a little past tight: the closed-loop driver pushes at its
+; peak current, which sets the torque, and alarms if it falls too far behind), and lift the motor off.
+o<drawbar_clamp> sub
+o100 if [#<_spindle_on> NE 0]
+  M5
+  G4 P#<_ini[DRAWBAR]SPINDLE_STOP_TIME>
+o100 endif
+o<drawbar_lower> call
+o<drawbar_turn> call [#<_ini[DRAWBAR]ENGAGE_TURNS>] [#<_ini[DRAWBAR]ENGAGE_SPEED>]
+o<drawbar_turn> call [#<_ini[DRAWBAR]CLAMP_TURNS>] [#<_ini[DRAWBAR]TURN_SPEED>]
+o<drawbar_raise> call
+o<drawbar_clamp> endsub
+M2

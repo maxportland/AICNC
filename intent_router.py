@@ -100,7 +100,7 @@ SYSTEM_PROMPT = (
     "homophones ('ex' = X, 'why' = Y, 'zed'/'zee' = Z). If the transcript looks garbled, use unclear.\n"
     "\n"
     "G-code rules for mdi:\n"
-    "- Output exactly one line. Allowed words only: G0 G1 G28 G30 G53 G90 G91, M3 M4 M5 M6 M7 M8 M9, X Y Z A, S, F, T.\n"
+    "- Output exactly one line. Allowed words only: G0 G1 G28 G30 G53 G90 G91, M3 M4 M5 M6 M7 M8 M9, X Y Z, S, F, T.\n"
     "- Relative moves ('move X by 10', 'move X 10', 'jog Y minus 5'): G91 G0 X10.0000\n"
     "  'move/jog <axis> <amount>' WITHOUT 'to' is always relative.\n"
     "- Absolute moves in work coordinates, only with 'to'/'go to' ('go to X 10 Y 20', 'move X to 10'):\n"

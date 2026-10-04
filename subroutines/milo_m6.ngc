@@ -1,0 +1,15 @@
+; M6 remapped (INI [RS274NGC] REMAP): a tool change with the power drawbar.
+; Z up, release the old tool, LinuxCNC's own M6 (the manual tool change prompt: swap the tool and
+; confirm), then clamp the new one. Unloading (T0) leaves the drawbar released.
+o<milo_m6> sub
+o100 if [#<_selected_tool> EQ #<_current_tool>]
+  o<milo_m6> return [1]
+o100 endif
+G53 G0 Z0
+o<drawbar_release> call
+M6
+o110 if [#<_selected_tool> NE 0]
+  o<drawbar_clamp> call
+o110 endif
+o<milo_m6> endsub [1]
+M2
