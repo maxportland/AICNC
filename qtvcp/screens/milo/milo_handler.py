@@ -30,6 +30,16 @@ HANG_SECONDS = 10  # the screen thread busy this long counts as a hang
 if CONFIG_DIR not in sys.path:
     sys.path.insert(0, CONFIG_DIR)
 
+# qtvcp runs under the system Python. Put the config's venv (qtawesome, openai, ...) ahead of
+# the system packages here rather than relying on a patched /usr/bin/linuxcnc, which every
+# LinuxCNC upgrade overwrites. PYTHONPATH carries it to child Python processes too.
+VENV_SITE = os.path.join(CONFIG_DIR, "venv", "lib",
+                         f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+if os.path.isdir(VENV_SITE) and VENV_SITE not in sys.path:
+    sys.path.insert(1, VENV_SITE)
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        p for p in (VENV_SITE, os.environ.get("PYTHONPATH")) if p)
+
 from milo_ui import theme  # noqa: E402
 from milo_ui.theme import C  # noqa: E402
 from milo_ui.machine import QtvcpMachine  # noqa: E402
