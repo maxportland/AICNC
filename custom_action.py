@@ -1,4 +1,4 @@
-# filepath: /home/cnc/linuxcnc/configs/AICNC/custom_action.py
+# filepath: /home/max/linuxcnc/configs/AICNC/custom_action.py
 from qtvcp.qt_action import _Lcnc_Action
 from PyQt5.QtCore import QProcess  # Import QProcess
 import os

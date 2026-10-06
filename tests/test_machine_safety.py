@@ -94,7 +94,7 @@ def test_program_ready(stat, tmp_path):
 
 
 def test_describe_machine(stat):
-    stat.file = "/home/cnc/linuxcnc/nc_files/ai/part.ngc"
+    stat.file = "/home/max/linuxcnc/nc_files/ai/part.ngc"
     text = describe_machine(stat)
     assert "Work position: X90.0000 Y40.0000 Z90.0000" in text
     assert "Machine position: X100.0000 Y50.0000 Z-10.0000" in text

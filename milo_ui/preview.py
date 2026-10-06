@@ -124,7 +124,7 @@ def scenario(name, shell, machine):
         machine.homed = {a: True for a in machine.axes}
         machine.tool, machine.tool_comment, machine.tool_diameter = 8, "1/4\" 4-flute endmill", 6.35
     if name in ("program", "running", "files"):
-        machine.open_program(here if os.path.exists(here) else "/home/cnc/linuxcnc/nc_files/ai/circle_76mm.ngc")
+        machine.open_program(here if os.path.exists(here) else "/home/max/linuxcnc/nc_files/ai/circle_76mm.ngc")
     if name == "running":
         machine.run(0)
         machine.line = 212
