@@ -163,6 +163,19 @@ number pad, nothing relies on hover, and scrolling is by drag. Fonts (Inter, Jet
   speeds and distances, and calibrates the tip on a ring gauge. The spindle won't start with the probe in.
   The routines are qtvcp's, run by `milo_probe_subprog.py` with probe-protected (G38.3) descents beside the
   part; qtvcp's own probe screen is still there under **Advanced**.
+- **Calibrate**: start from what you want to calibrate. **Backlash** measures the slack in X, Y or Z and
+  sets LinuxCNC's compensation for it. Milo brings the axis to the same spot from both sides (plus a small
+  test step that scales the readings) and something fixed watches where it really ends up: a **dial
+  indicator** you read at each stop (guided: Milo moves, you type the reading; which way the plunger points
+  doesn't matter), or the **camera** (automatic: an AprilTag on the table for X and Y, the line laser's
+  height on the table for Z; no camera calibration needed). The result shows each repeat and flags readings
+  that don't agree, an indicator reading in inches, an approach shorter than the slack, or more slack than
+  is worth compensating. **Set** writes `BACKLASH` into the axis's `[JOINT_n]` (and raises
+  `STEPGEN_MAXACCEL` to twice `MAX_ACCELERATION` for the compensation moves), after copying the INI to
+  `backups/`; LinuxCNC uses it from its next start. Measuring with compensation on finds what's left, and
+  Set adds it. Calibrate the probe tip again afterwards: its ring-gauge measurement included the old slack.
+  The **Probe tip** and **Camera** tiles lead to their calibrations on the Probe and Vision pages. The
+  logic is in `backlash.py`, the moves in `milo_ui/backlash_runner.py`.
 - **Vision**: the camera on the head (see [VISION_HARDWARE.md](VISION_HARDWARE.md) for the shopping list
   and setup). Scan the table to find parts, see them on a stitched map, and create a probe program
   that measures the chosen part and sets G54. Milo knows what the scan found, and its moves are

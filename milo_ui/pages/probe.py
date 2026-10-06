@@ -142,11 +142,11 @@ class ParamRow(QtWidgets.QPushButton):
 
 
 class GoalTile(QtWidgets.QPushButton):
-    """One thing to find: icon, name and a line on what it does"""
+    """One thing to find (or to calibrate): icon, name and a line on what it does"""
 
-    def __init__(self, key, parent=None):
+    def __init__(self, key, parent=None, entry=None):
         super().__init__(parent)
-        title, icon, summary = pj.GOALS[key]
+        title, icon, summary = entry or pj.GOALS[key]
         self.setCheckable(True)
         self.setFocusPolicy(Qt.NoFocus)
         self.setCursor(Qt.PointingHandCursor)

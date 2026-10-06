@@ -144,6 +144,7 @@ class MachineModel(QtCore.QObject):
         config_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.tool_table_path = os.path.join(config_dir, "tool.tbl")
         self.tool_links_path = os.path.join(config_dir, "tool_links.json")
+        self.ini_path = os.path.join(config_dir, "Mesa7I96S.ini")  # the machine's INI (Calibrate writes BACKLASH)
 
     # --- derived -------------------------------------------------------------------------
 
@@ -620,6 +621,7 @@ class QtvcpMachine(MachineModel):
         config_dir = os.path.dirname(os.path.abspath(info.INIPATH))
         self.tool_table_path = table if os.path.isabs(table) else os.path.join(config_dir, table)
         self.tool_links_path = os.path.join(config_dir, "tool_links.json")
+        self.ini_path = os.path.abspath(info.INIPATH)
 
     def _connect(self):
         S = self.STATUS
@@ -1050,6 +1052,9 @@ class SimMachine(MachineModel):
             shutil.copy(self.tool_table_path, os.path.join(sim_dir, "tool.tbl"))
         self.tool_table_path = os.path.join(sim_dir, "tool.tbl")
         self.tool_links_path = os.path.join(sim_dir, "tool_links.json")
+        if os.path.exists(self.ini_path):
+            shutil.copy(self.ini_path, os.path.join(sim_dir, "Mesa7I96S.ini"))
+        self.ini_path = os.path.join(sim_dir, "Mesa7I96S.ini")
         self._jogging: Dict[str, int] = {}
         self._targets: List[List[Optional[float]]] = []  # queued simulated G53 rapids
         self._timer = QtCore.QTimer(self)
@@ -1227,7 +1232,7 @@ class SimMachine(MachineModel):
         self.message.emit("info", f"MDI: {line}")
 
     def _simulate(self, line):
-        """Pretend-move for G53 rapids (camera scans and moves in previews and tests), and G10 L2
+        """Pretend-move for G53 rapids and feeds (camera scans, backlash measurements and moves in previews and tests), and G10 L2
         work offset changes"""
         words = line.upper().split()
         if words and words[0].startswith("O<DRAWBAR_"):
@@ -1258,7 +1263,7 @@ class SimMachine(MachineModel):
             self.position_changed.emit()
             self._emit("offsets")
             return
-        if "G53" in words and "G0" in words:
+        if "G53" in words and ("G0" in words or "G1" in words):
             target = [None, None, None]
             for w in words:
                 if w[0] in "XYZ" and len(w) > 1:
