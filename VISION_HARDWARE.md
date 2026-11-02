@@ -55,7 +55,7 @@ drag chain. Milo supports both; USB is simpler to route, the Pi camera gives a s
 | # | Item | Recommended | Why | ≈ Price |
 |---|------|-------------|-----|---------|
 | 8 | Line laser | **[Quarton VLM-650-28 LPT](https://www.amazon.com/Quarton-VLM-650-28-LPT-Generator-ECONOMICAL/dp/B00ARBPI5Y)**, 650 nm red line, Class 1 (<0.39 mW), >60° fan, Ø9 × 26 mm, 2.6–6 V | Eye-safe; optimised for short range (0.3–1.8 m), close to the camera's ~150–300 mm; automatic power control keeps the line's brightness steady, which the height measurement relies on | $29 |
-| 9 | Switching | Laser: nothing to buy, the **7i96S's OUT0** (a floating solid-state switch) and its +5VP pin (see *Wire*). Light: a free 7i84 output if it's 24 V, else a MOSFET or relay module | Lets LinuxCNC turn them on only during scans | $0–10 |
+| 9 | Switching | Laser: the **7i84's output 2** (set to sink) and a small 24 V → 5 V buck converter for its 5 V (see *Wire*). Light: a free 7i84 output if it's 24 V, else a MOSFET or relay module | Lets LinuxCNC turn them on only during scans | $5–15 |
 
 **Choosing the laser.** The ideal spec is a 650 nm line laser, Class 2 (≤1 mW) or lower, focused for
 short range, with stable output. When checked on Amazon (September 2026), no listing combined that
@@ -161,39 +161,47 @@ of view at the table.)
 ### 2. Wire
 
 - **Camera**: Pi 5 camera port (via the CSI-HDMI kit), or USB.
-- **Laser**: switched by the **7i96S's OUT0** from its own 5 V (below), already set up in the HAL.
+- **Laser**: switched by the **7i84's output 2**, with 5 V from a small buck converter on the 7i84's
+  field power (below), already set up in the HAL.
 - **Light, air valve**: from free 7i84 outputs (through a MOSFET or relay module if they aren't
   24 V; a 7i84 output gives up to 300 mA). In use in `Mesa7I96S.hal`: output-00 (spindle power), 05
-  (drawbar lift), 06 (mist), 07 (drawbar driver ENA). Output-02 is set to sink, not source. Free
+  (drawbar lift), 06 (mist), 07 (drawbar driver ENA), and 02 (the laser, set to sink, not source). Free
   sourcing outputs: **01, 03, 04, 08–15**. The HAL pins for these aren't created yet; see *What's
   next* below. Until then, leave the light on.
 - **Probe**: normally-closed probe on input 03 as today.
 
 #### The laser circuit
 
-The 7i96S's outputs OUT0–OUT3 are floating DC solid-state switches (0–36 V, 2 A, 75 mΩ), used
-"just like a switch or relay contact", and its +5VP pins are PTC-protected 5 V for field wiring
-([7I96S manual](https://www.mesanet.com/pdf/parallel/7i96sman.pdf)). So the laser needs no regulator:
+The laser runs on 2.6–6 V, and the 7i84's outputs are normally *sourcing*: on, they give the full
+field voltage (24 V), which would kill it. Output 2 is the exception: `output_sink` in
+`Mesa7I96S.hal` sets it to *sink*, so on, it connects its pin to the 7i84's ground. Sinking outputs
+can switch a load at a different voltage from the field supply
+(`reference_documents/7i84uman.pdf`, *sourcing vs sinking outputs*), so
+the laser gets 5 V from a small 24 V → 5 V buck converter fed from the 7i84's own field power:
 
 ```
- TB1 pin 6  (+5VP) ─────────── TB3 pin 14 (OUT0+)
-                               TB3 pin 13 (OUT0−) ─────── laser +
- TB1 pin 7  (GND)  ───────────────────────────────────── laser −
+ 7i84 TB1 pin 3/4 (VFIELDA, +24 V) ── converter IN+    converter OUT+ (5 V) ── laser +
+ 7i84 TB1 pin 6–8 (GND)  ─────────── converter IN−    converter OUT− ── (common with IN−)
+                                                       7i84 TB3 pin 19 (OUTPUT2) ── laser −
 ```
 
-- **OUT0+ to the 5 V side.** The outputs are polarised: reversed, they're stuck on.
+- **The converter's ground must be the 7i84's field ground** (most small buck modules have IN− and
+  OUT− joined; check). The 7i96S's +5VP won't do: its ground is the 7i96S's logic ground, isolated
+  from the 7i84's field side, so there'd be no return path.
+- **Set the converter to 5 V before connecting the laser** (adjustable modules often come set high).
+  Any 1 A module is plenty: the laser draws tens of mA.
+- **Never on a sourcing output.** If output 2 is ever moved, the new output's bit must be set in
+  `output_sink` and cleared in `output_source`.
 - **Check the laser's leads before powering it.** Usually red + and black −, but confirm on the
   module's label or datasheet: reversed polarity can kill the laser diode.
-- Any +5VP / GND pair works (TB1 pins 6/12/18/24 are +5VP, 7/19 GND). The laser's tens of mA are
-  nothing to the 7i96S's 5 V supply, and the PTC covers a short in the cable.
 - A 2-core cable through the drag chain to the head. Leave slack at the head for tilting and
   turning the barrel when aiming.
 - Not always-on 5 V: the line is found in the difference between a frame with the laser off and
   one with it on (the camera is monochrome and the table bright), so the screen must be able to
   switch it.
 
-In the HAL (`Mesa7I96S.hal`, `custom_postgui.hal`) OUT0 (`hm2_7i96s.0.ssr.00.out-00`) is on when
-either G-code asks (**M64 P1** on, **M65 P1** off) or the screen does (its `milo.laser` pin: the
+In the HAL (`Mesa7I96S.hal`, `custom_postgui.hal`) output 2 (`hm2_7i96s.0.7i84.1.0.output-02`) is on
+when either G-code asks (**M64 P1** on, **M65 P1** off) or the screen does (its `milo.laser` pin: the
 Vision page's **Laser** button, and the laser sweeps). It's off whenever LinuxCNC isn't running.
 
 **Aim it** with **Vision → Live → Laser**: the screen flashes the laser off and on, finds the line,
@@ -284,7 +292,7 @@ Done now:
 - the **Vision** page, a simulated camera for development, and Milo knowing what the scan found
 
 Also done:
-- the laser on 7i96S OUT0 (M64 P1, or the screen's `milo.laser`), the **Laser** aiming view, and line
+- the laser on 7i84 output 2 (M64 P1, or the screen's `milo.laser`), the **Laser** aiming view, and line
   finding for the mono camera (laser off/on difference)
 - the exact perspective height model for the laser
 - **Photograph the empty table**, and scans that find what changed from it

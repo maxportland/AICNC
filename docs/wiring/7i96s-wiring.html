@@ -1,0 +1,422 @@
+<title>Milo 7I96S Wiring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one wide schematic sheet (board in the middle, devices fanned out to the right, supply and
+   controller on the left), then a pin-by-pin table and the rules that make the wiring right. */
+:root {
+  --bg: #eef2f1;
+  --sheet: #fbfcfc;
+  --ink: #18221f;
+  --muted: #5d6b67;
+  --line: #ccd6d3;
+  --pcb: #1f4a3c;
+  --pcb-edge: #163729;
+  --silk: #e9f1ec;
+  --silk-dim: #8fb3a3;
+  --block: #2f7a55;
+  --block-pin: #d9e6df;
+  --pin-ink: #10261c;
+  --v24: #d1392b;
+  --v0: #2459b3;
+  --g-home: #c08400;
+  --g-probe: #0b8a8f;
+  --g-estop: #c3195d;
+  --g-drawbar: #6b4cc9;
+  --g-spindle: #b05a17;
+  --dim: #b9c5c1;
+  --v5: #d1392b;
+  --g-x: #c08400;
+  --g-y: #0b8a8f;
+  --g-z: #c3195d;
+  --g-a: #6b4cc9;
+  --g-enc: #b05a17;
+  --g-net: #3f6fb5;
+  --chip: #e2ebe8;
+  --display: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101614; --sheet: #161e1b; --ink: #e3ebe8; --muted: #93a39e; --line: #2c3935;
+    --pcb: #1c4436; --pcb-edge: #2b5d4a; --silk: #e3efe8; --silk-dim: #7ea595;
+    --block: #2f7a55; --block-pin: #cfe0d6; --pin-ink: #0e2219;
+    --v24: #f05a4a; --v0: #5b8ff0;
+    --g-home: #e3a61c; --g-probe: #2bb7bc; --g-estop: #f0508e; --g-drawbar: #9a80f0; --g-spindle: #e0843f;
+    --dim: #3c4a46; --chip: #22302b;
+    --v5: #f05a4a; --g-x: #e3a61c; --g-y: #2bb7bc; --g-z: #f0508e; --g-a: #9a80f0; --g-enc: #e0843f; --g-net: #6e9cf0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101614; --sheet: #161e1b; --ink: #e3ebe8; --muted: #93a39e; --line: #2c3935;
+  --pcb: #1c4436; --pcb-edge: #2b5d4a; --silk: #e3efe8; --silk-dim: #7ea595;
+  --block: #2f7a55; --block-pin: #cfe0d6; --pin-ink: #0e2219;
+  --v24: #f05a4a; --v0: #5b8ff0;
+  --g-home: #e3a61c; --g-probe: #2bb7bc; --g-estop: #f0508e; --g-drawbar: #9a80f0; --g-spindle: #e0843f;
+  --dim: #3c4a46; --chip: #22302b;
+    --v5: #f05a4a; --g-x: #e3a61c; --g-y: #2bb7bc; --g-z: #f0508e; --g-a: #9a80f0; --g-enc: #e0843f; --g-net: #6e9cf0;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-stretch: 78%; font-weight: 800; font-size: clamp(30px, 5vw, 46px); line-height: 1.02; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-stretch: 85%; font-weight: 700; font-size: 22px; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--display); font-stretch: 90%; font-weight: 700; font-size: 16px; margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: .86em; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font-family: var(--mono); font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--chip); color: var(--ink); }
+.chip b { font-weight: 600; }
+
+.sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; }
+.sheet svg { display: block; width: 100%; min-width: 1100px; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 12px 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); min-width: 1100px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { display: inline-block; width: 22px; height: 4px; border-radius: 2px; }
+
+section { display: grid; gap: 14px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); }
+table { border-collapse: collapse; width: 100%; min-width: 860px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--mono); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--sheet); }
+tr:last-child td { border-bottom: 0; }
+td.pin { font-family: var(--mono); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.pin .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+td .hal { font-family: var(--mono); font-size: 12px; color: var(--muted); display: block; }
+tr.group td { background: var(--chip); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding-block: 6px; }
+tr.unused td { color: var(--muted); }
+
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.rule { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.rule ul, .checks { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.rule li, .checks li { max-width: 68ch; }
+.checks li::marker { color: var(--muted); }
+.note { font-size: 13px; color: var(--muted); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">AICNC · Mesa7I96S.hal · 7I96S at 10.10.10.10 (hm2_eth)</div>
+    <h1>Milo 7I96S wiring</h1>
+    <p class="lede">Every 7I96S connection this config uses, drawn from the HAL file and the card's own firmware pinout (read with mesaflash). It's laid out like the real card, with the Ethernet jack pointing left. On each terminal block, pin 1 is at the bottom.</p>
+    <div class="chips">
+      <span class="chip"><b>4</b> step/dir channels: X, Y, Z, drawbar (TB1)</span>
+      <span class="chip"><b>1</b> spindle encoder (TB2)</span>
+            <span class="chip">7I84 + 7I83 on <b>P1</b> (smart serial port 1)</span>
+      <span class="chip">TB3 <b>not used</b> (the laser is on the 7I84U)</span>
+    </div>
+  </header>
+
+  <div class="sheet">
+    <svg id="diagram" viewBox="0 0 1420 1100" role="img" aria-label="Wiring diagram of the Mesa 7I96S: Ethernet on J1, 5 V on P4, step and direction on TB1, the spindle encoder on TB2 and the smart serial cards on P1"></svg>
+    <div class="legend">
+      <span><i style="background:var(--v5)"></i>+5 V</span>
+      <span><i style="background:var(--v0)"></i>0 V / ground</span>
+      <span><i style="background:var(--g-x)"></i>X</span>
+      <span><i style="background:var(--g-y)"></i>Y</span>
+      <span><i style="background:var(--g-z)"></i>Z</span>
+      <span><i style="background:var(--g-a)"></i>Drawbar (A)</span>
+      <span><i style="background:var(--g-enc)"></i>Spindle encoder</span>
+      <span><i style="background:var(--g-net)"></i>Ethernet and smart serial</span>
+    </div>
+  </div>
+
+  <section>
+    <h2>Pin by pin</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Terminal</th><th>What's on it</th><th>Wire it</th><th>In HAL</th></tr></thead>
+        <tbody id="pins"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>How the 7I96S side behaves</h2>
+    <div class="rules">
+      <div class="rule">
+        <h3>Step and direction are 5 V</h3>
+        <ul>
+          <li>Each STEP and DIR is a 5&nbsp;V differential pair that can drive 24&nbsp;mA. Wired as drawn, the + side goes to the driver's + input and the − side to its − input.</li>
+          <li>The other way, which Mesa suggests for drives that need more current: PUL+ and DIR+ to +5VP, PUL− to STEP−, DIR− to DIR−.</li>
+          <li>The CL57T and CL86T (v4) ship set for 24&nbsp;V signals. Set their 5V/24V selector to 5&nbsp;V.</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>The encoder, and TB3 left free</h3>
+        <ul>
+          <li>The spindle encoder takes 5&nbsp;V from TB2-12 and returns to TB2-9. Jumpers W1–W3 choose differential (right) or single-ended TTL (left). With a single-ended encoder, wire only A+ and B+.</li>
+          <li>The config uses only the encoder's speed (<code>encoder.00.velocity</code>), so the index pair can stay empty.</li>
+          <li>Nothing is wired to TB3. The camera laser is switched by the 7I84U's OUT2, so all of the machine's I/O is on one card. OUT0–3 are floating DC solid-state relays (36&nbsp;V, 2&nbsp;A) and OUT4–5 are AC (100&nbsp;mA), free for later.</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>Power and smart serial</h3>
+        <ul>
+          <li>P4 takes <b>5&nbsp;V only</b>: pin 1 (top, square pad) is +5&nbsp;V and pin 2 is ground. Any other voltage damages the card.</li>
+          <li>The +5VP pins on TB1 and TB2 are 5&nbsp;V outputs with resettable fuses (PTCs), for field wiring.</li>
+          <li>In this firmware, smart-serial port 1 is on P1, the 26-pin header, with channels 0–7. The 7I84 is channel 0 and the 7I83 is channel 1, both through an RS-422 breakout card on P1. TB2's serial pins (port 0) aren't used.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Check these before relying on it</h2>
+    <ul class="checks">
+      <li><b>IP address jumpers.</b> The config talks to 10.10.10.10, the address stored in the card's EEPROM. That needs W4 down and W5 up. Both down (the factory default) gives 192.168.1.121.</li>
+      <li><b>Driver signal voltage.</b> The closed-loop drivers' 5V/24V selector must be on 5&nbsp;V, or they can miss steps or not see them at all.</li>
+      <li><b>P1 breakout power.</b> W6 up sends 5&nbsp;V out on DB25 pins 22–25 to power the breakout. Use it only with a Mesa breakout that expects it (for example a 7I44). The config doesn't record which breakout you have.</li>
+      <li><b>Encoder mode.</b> W1–W3 must match the encoder: right for differential, left for single-ended.</li>
+      <li><b>Spindle analog.</b> TB2-22 to 24 (the 7I96S's own spindle output) aren't used. The ±10&nbsp;V speed command comes from the 7I83: <code>analogout0</code> and <code>analogena0</code> on its TB2.</li>
+      <li><b>Frame ground.</b> Connect the top-left mounting hole, beside the Ethernet jack, to the machine's earth.</li>
+    </ul>
+    <p class="note">Sources: Mesa7I96S.hal (lines 9–30, 64–242, 281–329), the firmware pinout read from the card with <code>mesaflash --readhmid</code>, the Mesa 7I96S and 7I83 manuals, and the CL57T and CL86T v4 manuals in reference_documents.</p>
+  </section>
+</div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("diagram");
+function el(tag, attrs = {}, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, val] of Object.entries(attrs)) e.setAttribute(k, val);
+  if (text != null) e.textContent = text;
+  svg.appendChild(e);
+  return e;
+}
+const v = name => `var(${name})`;
+const FONT_MONO = "JetBrains Mono, ui-monospace, monospace";
+const FONT_DISP = "Archivo, Arial Narrow, sans-serif";
+const FONT_BODY = "IBM Plex Sans, system-ui, sans-serif";
+function label(x, y, s, o = {}) {
+  const t = el("text", { x, y, fill: v(o.color || "--ink"), "font-family": o.font || FONT_BODY, "font-size": o.size || 12,
+    "font-weight": o.weight || 400, "text-anchor": o.anchor || "start", "dominant-baseline": "middle",
+    ...(o.stretch ? { "font-stretch": o.stretch } : {}) }, s);
+  if (o.rotate) t.setAttribute("transform", `rotate(${o.rotate} ${x} ${y})`);
+  return t;
+}
+function wire(points, color, width = 2.5, extra = {}) {
+  el("polyline", { points: points.map(p => p.join(",")).join(" "), fill: "none", stroke: v(color), "stroke-width": width,
+    "stroke-linejoin": "round", "stroke-linecap": "round", ...extra });
+}
+function dot(x, y, color, r = 4) { el("circle", { cx: x, cy: y, r, fill: v(color) }); }
+function box(x, y, w, h, color, title, lines) {
+  el("rect", { x, y, width: w, height: h, rx: 5, fill: v("--sheet"), stroke: v(color), "stroke-width": 1.6 });
+  el("rect", { x, y, width: 5, height: h, fill: v(color) });
+  label(x + 14, y + 16, title, { size: 12.5, weight: 600 });
+  lines.forEach((s, i) => label(x + 14, y + 34 + i * 15, s, { size: 10.5, color: "--muted", font: i === 0 ? FONT_BODY : FONT_MONO }));
+}
+
+// --- geometry: Mesa's connector-location drawing scaled 1.5x (Ethernet pointing left) ---
+const BOARD = { x: 250, y: 150, w: 891, h: 716 };
+const BW = 46;
+const TB1X = 696, TB2X = 878, TB3X = 1104;
+const pinY = n => 790.5 - (n - 1) * 25.4;   // pin 1 at the bottom of each terminal block
+
+// TB1: four step/dir channels, six pins each
+const TB1 = ["GND", "STEP0−", "STEP0+", "DIR0−", "DIR0+", "+5VP", "GND", "STEP1−", "STEP1+", "DIR1−", "DIR1+", "+5VP",
+             "GND", "STEP2−", "STEP2+", "DIR2−", "DIR2+", "+5VP", "GND", "STEP3−", "STEP3+", "DIR3−", "DIR3+", "+5VP"];
+const TB2 = ["GND", "STEP4−", "STEP4+", "DIR4−", "DIR4+", "+5VP", "ENCA+", "ENCA−", "GND", "ENCB+", "ENCB−", "+5VP",
+             "IDX+", "IDX−", "GND", "RX+", "RX−", "TX+", "TX−", "+5VP", "NC", "SPIN−", "SPIN OUT", "SPIN+"];
+const TB3 = ["IN0", "IN1", "IN2", "IN3", "IN4", "IN5", "IN6", "IN7", "IN8", "IN9", "IN10", "IN COM",
+             "OUT0−", "OUT0+", "OUT1−", "OUT1+", "OUT2−", "OUT2+", "OUT3−", "OUT3+", "OUT4A", "OUT4B", "OUT5A", "OUT5B"];
+
+// The step/dir channels: first pin, which way the harness leaves the board, where its driver sits
+const AXES = [
+  { ch: 0, first: 1,  c: "--g-x", name: "X driver", sub: "closed loop · 644 steps/mm", hal: "stepgen.00 ← joint.0", hx: 770, dir: 1,  bx: 640, bw: 190 },
+  { ch: 1, first: 7,  c: "--g-y", name: "Y driver", sub: "closed loop · −646 steps/mm", hal: "stepgen.01 ← joint.1", hx: 790, dir: 1,  bx: 846, bw: 190 },
+  { ch: 2, first: 13, c: "--g-z", name: "Z driver", sub: "closed loop · 644 steps/mm", hal: "stepgen.02 ← joint.2", hx: 770, dir: -1, bx: 640, bw: 190 },
+  { ch: 3, first: 19, c: "--g-a", name: "Drawbar driver (CL86Y)", sub: "A axis · 1600 pulses/turn", hal: "stepgen.03 ← joint.3", hx: 790, dir: -1, bx: 846, bw: 190 },
+];
+const STEP_PAIRS = [[1, "STEP−", "PUL−"], [2, "STEP+", "PUL+"], [3, "DIR−", "DIR−"], [4, "DIR+", "DIR+"]];
+
+// --- board ---
+el("rect", { x: BOARD.x, y: BOARD.y, width: BOARD.w, height: BOARD.h, rx: 10, fill: v("--pcb"), stroke: v("--pcb-edge"), "stroke-width": 2 });
+for (const cx of [274, 677, 1084]) for (const cy of [176, 840])
+  el("circle", { cx, cy, r: 13, fill: v("--sheet"), stroke: v("--silk-dim"), "stroke-width": 1.5 });
+label(296, 176, "FRAME GND", { color: "--silk-dim", font: FONT_MONO, size: 10 });
+
+label(TB1X + BW / 2, 172, "TB1", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(TB2X + BW / 2, 172, "TB2", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(TB3X + BW / 2, 172, "TB3", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(TB1X + BW / 2, 132, "STEP/DIR 0–3", { color: "--muted", font: FONT_MONO, size: 10.5, anchor: "middle" });
+label(TB2X + BW / 2 + 30, 132, "STEP/DIR 4 · ENC · SERIAL · ANALOG", { color: "--muted", font: FONT_MONO, size: 10.5, anchor: "middle" });
+label(TB3X + BW / 2, 132, "ISOLATED I/O", { color: "--muted", font: FONT_MONO, size: 10.5, anchor: "middle" });
+
+// FPGA, logo, JTAG
+el("rect", { x: 300, y: 492, width: 96, height: 96, rx: 3, fill: v("--pcb-edge"), stroke: v("--silk-dim"), "stroke-width": 1 });
+label(348, 540, "FPGA", { color: "--silk-dim", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(452, 478, "MESA", { color: "--silk-dim", font: FONT_DISP, size: 15, weight: 800, stretch: "80%" });
+label(452, 508, "7I96S", { color: "--silk", font: FONT_DISP, size: 30, weight: 800, stretch: "75%" });
+for (let r = 0; r < 2; r++) for (let c = 0; c < 5; c++)
+  el("rect", { x: 462 + c * 12, y: 410 + r * 12, width: 8, height: 8, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1 });
+label(462, 396, "P2 JTAG", { color: "--silk-dim", font: FONT_MONO, size: 10 });
+
+// jumpers: a shunt drawn over two of three pins
+function jumper(x, y, vertical, shuntFirst, name, note, noteAt) {
+  for (let i = 0; i < 3; i++) {
+    const px = vertical ? x : x + i * 13, py = vertical ? y + i * 13 : y;
+    el("rect", { x: px, y: py, width: 10, height: 10, rx: 1.5, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1.1 });
+  }
+  const off = shuntFirst ? 0 : 13;
+  el("rect", vertical ? { x: x - 2, y: y - 2 + off, width: 14, height: 25, rx: 2, fill: v("--pin-ink"), stroke: v("--silk"), "stroke-width": 1 }
+                      : { x: x - 2 + off, y: y - 2, width: 25, height: 14, rx: 2, fill: v("--pin-ink"), stroke: v("--silk"), "stroke-width": 1 });
+  if (name) label(noteAt[0], noteAt[1], name, { color: "--silk", font: FONT_MONO, size: 10.5, weight: 600 });
+  if (note) label(noteAt[0], noteAt[1] + 14, note, { color: "--silk-dim", size: 10 });
+}
+jumper(272, 664, true, false, "W4", "down", [272, 718]);
+jumper(296, 664, true, true, "W5", "up", [300, 718]);
+label(328, 668, "IP from EEPROM", { color: "--silk-dim", size: 10 });
+label(328, 682, "(10.10.10.10)", { color: "--silk-dim", size: 10, font: FONT_MONO });
+jumper(552, 776, true, false, "W6", "P1 5 V", [500, 784]);
+jumper(804, 604, false, false, null, null, [0, 0]);
+jumper(804, 590, false, false, null, null, [0, 0]);
+jumper(804, 576, false, false, null, null, [0, 0]);
+label(822, 564, "W1–3", { color: "--silk-dim", font: FONT_MONO, size: 9.5, anchor: "middle" });
+jumper(812, 400, false, true, "W7", null, [818, 388]);
+
+// J1 Ethernet, out of the left edge
+el("rect", { x: 228, y: 205, width: 150, height: 116, rx: 4, fill: v("--block-pin"), stroke: v("--pcb-edge"), "stroke-width": 2 });
+el("rect", { x: 238, y: 236, width: 62, height: 56, rx: 3, fill: v("--pin-ink") });
+label(390, 228, "J1", { color: "--silk", font: FONT_MONO, size: 12, weight: 600 });
+label(390, 244, "Ethernet host", { color: "--silk-dim", size: 10.5 });
+
+// P4 5 V power, bottom left
+el("rect", { x: 230, y: 744, width: 56, height: 66, rx: 4, fill: v("--block") });
+for (const [n, y] of [[1, 760], [2, 794]]) {
+  el("rect", { x: 238, y: y - 11, width: 40, height: 22, rx: n === 1 ? 1 : 3, fill: v("--block-pin"), stroke: v("--block-pin"), "stroke-width": n === 1 ? 2.2 : 1.2 });
+  label(258, y + 1, String(n), { color: "--pin-ink", font: FONT_MONO, size: 11.5, weight: 600, anchor: "middle" });
+}
+label(298, 760, "+5V", { color: "--silk", font: FONT_MONO, size: 10.5 });
+label(298, 794, "GND", { color: "--silk", font: FONT_MONO, size: 10.5 });
+label(300, 826, "P4 · 5 V ONLY", { color: "--silk", font: FONT_MONO, size: 10, weight: 600 });
+
+// P1 26-pin expansion header, pin 1 top left
+el("rect", { x: 574, y: 446, width: 54, height: 330, rx: 4, fill: v("--pin-ink"), stroke: v("--silk-dim"), "stroke-width": 1.2 });
+for (let r = 0; r < 13; r++) for (let c = 0; c < 2; c++) {
+  const first = r === 0 && c === 0;
+  el("rect", { x: 584 + c * 22, y: 458 + r * 24.5, width: 12, height: 12, rx: first ? 0 : 6, fill: first ? v("--silk") : "none", stroke: v("--silk-dim"), "stroke-width": 1.1 });
+}
+label(648, 612, "P1 EXPANSION", { color: "--silk-dim", font: FONT_MONO, size: 10.5, anchor: "middle", rotate: -90 });
+
+// terminal blocks
+function block(x, names, live, labelSide) {
+  el("rect", { x, y: pinY(24) - 15, width: BW, height: pinY(1) - pinY(24) + 30, rx: 4, fill: v("--block") });
+  for (let n = 1; n <= 24; n++) {
+    const y = pinY(n), on = live(n);
+    el("rect", { x: x + 6, y: y - 11, width: BW - 12, height: 22, rx: n === 1 ? 1 : 3,
+      fill: on ? v("--block-pin") : "transparent", stroke: v("--block-pin"), "stroke-width": n === 1 ? 2.2 : 1.2, opacity: on ? 1 : 0.55 });
+    label(x + BW / 2, y + 1, String(n), { color: on ? "--pin-ink" : "--block-pin", font: FONT_MONO, size: 11, weight: 600, anchor: "middle" });
+    label(x - 6, y + 1, names[n - 1], { color: on ? "--silk" : "--silk-dim", font: FONT_MONO, size: 9.5, anchor: "end" });
+  }
+  label(x + BW / 2, pinY(1) + 26, "PIN 1", { color: "--silk-dim", font: FONT_MONO, size: 9, anchor: "middle" });
+}
+const tb1Live = new Set();
+AXES.forEach(a => STEP_PAIRS.forEach(([o]) => tb1Live.add(a.first + o)));
+block(TB1X, TB1, n => tb1Live.has(n));
+const ENC = [[7, "ENCA+", "A+"], [8, "ENCA−", "A−"], [9, "GND", "0 V"], [10, "ENCB+", "B+"], [11, "ENCB−", "B−"], [12, "+5VP", "+5 V"]];
+block(TB2X, TB2, n => n >= 7 && n <= 12);
+block(TB3X, TB3, () => false);
+
+// group marks for the unused sections of TB2
+for (const [a, b, s] of [[1, 6, "STEP/DIR 4"], [16, 20, "SERIAL"], [21, 24, "ANALOG"]]) {
+  const y1 = pinY(a), y2 = pinY(b), x = TB2X + BW + 8;
+  el("line", { x1: x, x2: x, y1: y1 + 8, y2: y2 - 8, stroke: v("--silk-dim"), "stroke-width": 1 });
+  label(x + 10, (y1 + y2) / 2, s, { color: "--silk-dim", font: FONT_MONO, size: 9.5, anchor: "middle", rotate: -90 });
+}
+label(TB3X - 70, (pinY(1) + pinY(12)) / 2, "IN0–10 · unused", { color: "--silk-dim", font: FONT_MONO, size: 9.5, anchor: "middle", rotate: -90 });
+
+// --- step/dir harnesses: four wires per axis gather into a cable that leaves the board ---
+const TOP = 40, BOTTOM = 908, JOG_TOP = 112, JOG_BOT = 888;
+for (const a of AXES) {
+  const pins = STEP_PAIRS.map(([o]) => a.first + o);
+  for (const n of pins) { wire([[TB1X + BW - 6, pinY(n)], [a.hx, pinY(n)]], a.c, 2); dot(TB1X + BW - 6, pinY(n), a.c, 3); }
+  const near = a.dir > 0 ? pinY(Math.max(...pins)) : pinY(Math.min(...pins));
+  const jogY = a.dir > 0 ? JOG_BOT : JOG_TOP;
+  const boxY = a.dir > 0 ? BOTTOM : TOP;
+  const cx = a.bx + a.bw / 2;
+  wire([[a.hx, near], [a.hx, jogY], [cx, jogY], [cx, a.dir > 0 ? boxY : boxY + 62]], a.c, 5);
+  box(a.bx, boxY, a.bw, 62, a.c, a.name, [a.sub, `STEP±→PUL± · DIR±→DIR±`]);
+}
+
+// --- spindle encoder cable ---
+{
+  const hx = 968, c = "--g-enc";
+  for (const [n] of ENC) { wire([[TB2X + BW - 6, pinY(n)], [hx, pinY(n)]], c, 2); dot(TB2X + BW - 6, pinY(n), c, 3); }
+  wire([[hx, pinY(12)], [hx, JOG_BOT], [1132, JOG_BOT], [1132, BOTTOM]], c, 5);
+  box(1052, BOTTOM, 170, 62, c, "Spindle encoder", ["speed feedback · encoder.00", "A± B± +5V 0V · no index"]);
+}
+
+// --- TB3: nothing wired (the camera laser moved to the 7I84U's OUT2) ---
+label(TB3X + BW + 16, (pinY(13) + pinY(24)) / 2, "OUT0–5 · free", { color: "--muted", font: FONT_MONO, size: 11, anchor: "middle", rotate: -90 });
+
+// --- J1 to the Pi ---
+box(20, 214, 180, 74, "--g-net", "Raspberry Pi", ["eth0 · 10.10.10.11", "hm2_eth → 10.10.10.10"]);
+wire([[200, 263], [238, 263]], "--g-net", 6);
+
+// --- P4 from the 5 V supply ---
+box(20, 732, 160, 86, "--v5", "5 V DC supply", ["logic power, 5 V only", "+ → P4-1 · − → P4-2"]);
+wire([[180, 760], [246, 760]], "--v5", 3);
+wire([[180, 794], [246, 794]], "--v0", 3);
+
+// --- P1 to the RS-422 breakout and the two smart-serial cards ---
+{
+  const c = "--g-net";
+  el("rect", { x: 586, y: 776, width: 30, height: 120, fill: v("--muted"), opacity: 0.55 });
+  for (let i = 0; i < 6; i++) el("line", { x1: 588 + i * 5, x2: 588 + i * 5, y1: 778, y2: 894, stroke: v("--sheet"), "stroke-width": 0.8, opacity: 0.6 });
+  label(570, 874, "26-pin ribbon / DB25", { size: 10, color: "--muted", font: FONT_MONO, anchor: "end" });
+  box(430, 896, 196, 62, c, "RS-422 breakout on P1", ["smart serial port 1, ch 0–7", "e.g. Mesa 7I44"]);
+  wire([[480, 958], [480, 980], [330, 980], [330, 1010]], c, 5);
+  wire([[560, 958], [560, 1010]], c, 5);
+  box(224, 1010, 210, 62, "--g-drawbar", "7I84U field I/O", ["channel 0 · 7i84.1.0", "homes, probes, E-stop, drawbar"]);
+  box(460, 1010, 200, 62, "--g-spindle", "7I83 analog out", ["channel 1 · 7i83.1.1", "spindle ±10 V + enable"]);
+  label(342, 996, "CAT5", { size: 10, color: "--muted", font: FONT_MONO });
+  label(568, 990, "CAT5", { size: 10, color: "--muted", font: FONT_MONO });
+}
+
+// --- the pin table ---
+const tbody = document.getElementById("pins");
+function row(cells, cls, sw) {
+  const tr = document.createElement("tr"); if (cls) tr.className = cls;
+  tr.innerHTML = cells.map((c, i) => i === 0 && sw !== undefined
+    ? `<td class="pin"><span class="sw" style="background:var(${sw})"></span>${c}</td>` : `<td>${c}</td>`).join("");
+  tbody.appendChild(tr);
+}
+const group = s => { const tr = document.createElement("tr"); tr.className = "group"; tr.innerHTML = `<td colspan="4">${s}</td>`; tbody.appendChild(tr); };
+const hal = s => `<span class="hal">${s}</span>`;
+
+group("Power and network");
+row(["P4-1", "+5 V logic power (top, square pad)", "5 V supply +", hal("5 V only")], null, "--v5");
+row(["P4-2", "Ground", "5 V supply −", hal("—")], null, "--v0");
+row(["J1", "Ethernet to the Raspberry Pi", "Straight CAT5 to eth0 (10.10.10.11)", hal("[HOSTMOT2] hm2_eth, BOARD_IP 10.10.10.10")], null, "--g-net");
+row(["P1", "Smart serial port 1 (channels 0–7)", "Ribbon or DB25 to an RS-422 breakout, then CAT5 to the 7I84U (ch 0) and 7I83 (ch 1)", hal("hm2_7i96s.0.7i84.1.0 · hm2_7i96s.0.7i83.1.1")], null, "--g-net");
+
+group("TB1 · step and direction (5 V differential)");
+for (const a of AXES) {
+  const p = a.first;
+  row([`TB1-${p + 1} to ${p + 4}`, `${a.name}${hal(a.sub)}`,
+       `${p + 2} STEP${a.ch}+ → PUL+ · ${p + 1} STEP${a.ch}− → PUL−<br>${p + 4} DIR${a.ch}+ → DIR+ · ${p + 3} DIR${a.ch}− → DIR−`,
+       hal(`${a.hal}`)], null, a.c);
+  row([`TB1-${p}, ${p + 5}`, `GND and +5VP for channel ${a.ch}`, "Not used with differential wiring (available for single-ended wiring)", hal("—")], "unused", "--dim");
+}
+
+group("TB2 · spindle encoder");
+for (const [n, name, what] of ENC)
+  row([`TB2-${n} · ${name}`, `Spindle encoder ${what}`, n === 12 ? "Encoder +5 V supply" : n === 9 ? "Encoder ground" : `Encoder ${what}`, hal("encoder.00.velocity → scale.2, scale.3 → spindle speed")], null, "--g-enc");
+row(["TB2-13 to 15", "IDX+, IDX−, GND", "Leave empty: the config doesn't use the index", hal("—")], "unused", "--dim");
+row(["TB2-1 to 6", "STEP/DIR 4", "Free (the firmware has a fifth step generator, the config loads four)", hal("num_stepgens=4")], "unused", "--dim");
+row(["TB2-16 to 20", "RS-422 serial (smart serial port 0)", "Free: the smart-serial cards are on P1", hal("—")], "unused", "--dim");
+row(["TB2-22 to 24", "Analog spindle output", "Free: the spindle speed comes from the 7I83", hal("pwmgen loaded, not connected")], "unused", "--dim");
+
+group("TB3 · isolated I/O");
+row(["TB3-1 to 12", "IN0–10 and input common", "Free: all of the machine's inputs are on the 7I84U", hal("not in any HAL file")], "unused", "--dim");
+row(["TB3-13 to 24", "OUT0–3 (DC SSR, 2 A) and OUT4–5 (AC SSR, 100 mA)", "Free: the camera laser is on the 7I84U's OUT2 (TB3-19)", hal("—")], "unused", "--dim");
+</script>

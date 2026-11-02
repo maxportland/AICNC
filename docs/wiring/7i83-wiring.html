@@ -1,0 +1,350 @@
+<title>Milo 7I83 Wiring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one wide schematic sheet (board in the middle, devices fanned out to the right, supply and
+   controller on the left), then a pin-by-pin table and the rules that make the wiring right. */
+:root {
+  --bg: #eef2f1;
+  --sheet: #fbfcfc;
+  --ink: #18221f;
+  --muted: #5d6b67;
+  --line: #ccd6d3;
+  --pcb: #1f4a3c;
+  --pcb-edge: #163729;
+  --silk: #e9f1ec;
+  --silk-dim: #8fb3a3;
+  --block: #2f7a55;
+  --block-pin: #d9e6df;
+  --pin-ink: #10261c;
+  --v24: #d1392b;
+  --v0: #2459b3;
+  --g-home: #c08400;
+  --g-probe: #0b8a8f;
+  --g-estop: #c3195d;
+  --g-drawbar: #6b4cc9;
+  --g-spindle: #b05a17;
+  --dim: #b9c5c1;
+  --v5: #d1392b;
+  --g-x: #c08400;
+  --g-y: #0b8a8f;
+  --g-z: #c3195d;
+  --g-a: #6b4cc9;
+  --g-enc: #b05a17;
+  --g-net: #3f6fb5;
+  --chip: #e2ebe8;
+  --display: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101614; --sheet: #161e1b; --ink: #e3ebe8; --muted: #93a39e; --line: #2c3935;
+    --pcb: #1c4436; --pcb-edge: #2b5d4a; --silk: #e3efe8; --silk-dim: #7ea595;
+    --block: #2f7a55; --block-pin: #cfe0d6; --pin-ink: #0e2219;
+    --v24: #f05a4a; --v0: #5b8ff0;
+    --g-home: #e3a61c; --g-probe: #2bb7bc; --g-estop: #f0508e; --g-drawbar: #9a80f0; --g-spindle: #e0843f;
+    --dim: #3c4a46; --chip: #22302b;
+    --v5: #f05a4a; --g-x: #e3a61c; --g-y: #2bb7bc; --g-z: #f0508e; --g-a: #9a80f0; --g-enc: #e0843f; --g-net: #6e9cf0;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101614; --sheet: #161e1b; --ink: #e3ebe8; --muted: #93a39e; --line: #2c3935;
+  --pcb: #1c4436; --pcb-edge: #2b5d4a; --silk: #e3efe8; --silk-dim: #7ea595;
+  --block: #2f7a55; --block-pin: #cfe0d6; --pin-ink: #0e2219;
+  --v24: #f05a4a; --v0: #5b8ff0;
+  --g-home: #e3a61c; --g-probe: #2bb7bc; --g-estop: #f0508e; --g-drawbar: #9a80f0; --g-spindle: #e0843f;
+  --dim: #3c4a46; --chip: #22302b;
+    --v5: #f05a4a; --g-x: #e3a61c; --g-y: #2bb7bc; --g-z: #f0508e; --g-a: #9a80f0; --g-enc: #e0843f; --g-net: #6e9cf0;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-stretch: 78%; font-weight: 800; font-size: clamp(30px, 5vw, 46px); line-height: 1.02; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-stretch: 85%; font-weight: 700; font-size: 22px; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--display); font-stretch: 90%; font-weight: 700; font-size: 16px; margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: .86em; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font-family: var(--mono); font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--chip); color: var(--ink); }
+.chip b { font-weight: 600; }
+
+.sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; }
+.sheet svg { display: block; width: 100%; min-width: 1100px; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 12px 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); min-width: 1100px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { display: inline-block; width: 22px; height: 4px; border-radius: 2px; }
+
+section { display: grid; gap: 14px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); }
+table { border-collapse: collapse; width: 100%; min-width: 860px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--mono); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--sheet); }
+tr:last-child td { border-bottom: 0; }
+td.pin { font-family: var(--mono); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.pin .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+td .hal { font-family: var(--mono); font-size: 12px; color: var(--muted); display: block; }
+tr.group td { background: var(--chip); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding-block: 6px; }
+tr.unused td { color: var(--muted); }
+
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.rule { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.rule ul, .checks { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.rule li, .checks li { max-width: 68ch; }
+.checks li::marker { color: var(--muted); }
+.note { font-size: 13px; color: var(--muted); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">AICNC · Mesa7I96S.hal · 7I83 on smart serial (hm2_7i96s.0.7i83.1.1)</div>
+    <h1>Milo 7I83 wiring</h1>
+    <p class="lede">The 7I83 does one job on this machine: it sets the spindle's speed with a ±10&nbsp;V signal and enables the spindle drive. Drawn from the HAL file and laid out like the real card, with the RJ-45 pointing left and TB2's pin 1 at the bottom. The spindle drive's terminals are taken from the SDF servo drive diagrams in reference_documents.</p>
+    <div class="chips">
+      <span class="chip"><b>1</b> of 6 channels used (TB2-1 to 4)</span>
+      <span class="chip">AOUT0: spindle speed, <b>±10 V</b></span>
+      <span class="chip">ENA0: spindle drive <b>enable</b></span>
+      <span class="chip">VIN <b>8–35 V</b> on TB1</span>
+    </div>
+  </header>
+
+  <div class="sheet">
+    <svg id="diagram" viewBox="0 0 1300 1095" role="img" aria-label="Wiring diagram of the Mesa 7I83: power on TB1, smart serial on J1, and channel 0's analog output and enable on TB2 going to the spindle servo drive"></svg>
+    <div class="legend">
+      <span><i style="background:var(--v24)"></i>VIN + (8–35 V)</span>
+      <span><i style="background:var(--v0)"></i>0 V / ground</span>
+      <span><i style="background:var(--g-spindle)"></i>Spindle speed (analog)</span>
+      <span><i style="background:var(--g-drawbar)"></i>Spindle enable</span>
+      <span><i style="background:var(--g-net)"></i>Smart serial</span>
+    </div>
+  </div>
+
+  <section>
+    <h2>Pin by pin</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Terminal</th><th>What's on it</th><th>Wire it</th><th>In HAL</th></tr></thead>
+        <tbody id="pins"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>How the 7I83 side behaves</h2>
+    <div class="rules">
+      <div class="rule">
+        <h3>The analog output</h3>
+        <ul>
+          <li>Each AOUT gives −10 to +10&nbsp;V, measured against the AGND pin beside it. Load it with 2&nbsp;kΩ or more.</li>
+          <li>Mesa suggests shielded twisted pair: AOUT to the drive's command input, AGND to its reference, and the shield to AGND at the 7I83 end only.</li>
+          <li>The output is isolated from the 7I96S and the Pi, which helps avoid ground loops.</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>The enable output</h3>
+        <ul>
+          <li>Each ENA is a floating optocoupler switch: up to 100&nbsp;V DC and 50&nbsp;mA. It is polarised, so ENA+ must be the more positive side. Reversing it can damage it.</li>
+          <li>The enable also gates the analog output. While ENA0 is off, AOUT0 is held at 0&nbsp;V.</li>
+          <li>If communication with the 7I96S stops for more than 50&nbsp;ms, all outputs go to 0&nbsp;V and every enable turns off. That doesn't replace an E-stop that removes drive power.</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>Power and serial</h3>
+        <ul>
+          <li>TB1-1 VIN takes 8–35&nbsp;V DC (about 1&nbsp;W). TB1-2 is ground, and it's connected to the analog ground.</li>
+          <li>Mesa suggests putting the VIN supply near the drive it signals to, for the best noise isolation.</li>
+          <li>J1 takes a straight CAT5 cable from channel 1 of the RS-422 breakout on the 7I96S's P1. That cable also powers the 7I83's serial side (30&nbsp;mA).</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Check these before relying on it</h2>
+    <ul class="checks">
+      <li><b>Speed polarity.</b> With M3 the config sends a <b>negative</b> voltage (<code>scale.0</code> gain −0.0034&nbsp;V per rpm, so about −3.4&nbsp;V at 1000&nbsp;rpm). With M4 it sends a positive one (<code>scale.1</code>, +0.0034). The SDF analog-speed diagram shows a 0 to +10&nbsp;V command. If the drive is set for 0–10&nbsp;V only, M3 won't turn the spindle. Either set the drive for ±10&nbsp;V, or change the gains and use its CW input for direction.</li>
+      <li><b>Drive ground.</b> Mesa says to run a separate wire from the drive's signal ground to the 7I83's TB1 ground, besides the AGND in the twisted pair.</li>
+      <li><b>Enable polarity.</b> The drive's SON input is sinking: COM+ (CN1-8) goes to +24&nbsp;V, and SON (CN1-21) turns on when it's pulled to 0&nbsp;V. So ENA0+ goes to SON and ENA0− to the drive's 0&nbsp;V (DGND, CN1-16).</li>
+      <li><b>Which drive.</b> The config doesn't name the spindle drive. The CN1 and CN6 pins shown come from the SDF series diagrams in reference_documents. Check them against your drive's label.</li>
+      <li><b>W1 jumper.</b> Up (the default) is operate mode at 2.5&nbsp;Mbaud, which the 7I96S needs. Down is setup mode at 115.2&nbsp;kbaud.</li>
+    </ul>
+    <p class="note">Sources: Mesa7I96S.hal (lines 281–329), the [SPINDLE_0] section of Mesa7I96S.ini, the 7I96S firmware pinout (mesaflash), the Mesa 7I83 manual, and the SDF drive wiring diagrams in reference_documents.</p>
+  </section>
+</div>
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("diagram");
+function el(tag, attrs = {}, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, val] of Object.entries(attrs)) e.setAttribute(k, val);
+  if (text != null) e.textContent = text;
+  svg.appendChild(e);
+  return e;
+}
+const v = name => `var(${name})`;
+const FONT_MONO = "JetBrains Mono, ui-monospace, monospace";
+const FONT_DISP = "Archivo, Arial Narrow, sans-serif";
+const FONT_BODY = "IBM Plex Sans, system-ui, sans-serif";
+function label(x, y, s, o = {}) {
+  const t = el("text", { x, y, fill: v(o.color || "--ink"), "font-family": o.font || FONT_BODY, "font-size": o.size || 12,
+    "font-weight": o.weight || 400, "text-anchor": o.anchor || "start", "dominant-baseline": "middle",
+    ...(o.stretch ? { "font-stretch": o.stretch } : {}) }, s);
+  if (o.rotate) t.setAttribute("transform", `rotate(${o.rotate} ${x} ${y})`);
+  return t;
+}
+function wire(points, color, width = 2.5, extra = {}) {
+  el("polyline", { points: points.map(p => p.join(",")).join(" "), fill: "none", stroke: v(color), "stroke-width": width,
+    "stroke-linejoin": "round", "stroke-linecap": "round", ...extra });
+}
+function dot(x, y, color, r = 4) { el("circle", { cx: x, cy: y, r, fill: v(color) }); }
+function box(x, y, w, h, color, title, lines) {
+  el("rect", { x, y, width: w, height: h, rx: 5, fill: v("--sheet"), stroke: v(color), "stroke-width": 1.6 });
+  el("rect", { x, y, width: 5, height: h, fill: v(color) });
+  label(x + 14, y + 16, title, { size: 12.5, weight: 600 });
+  lines.forEach((s, i) => label(x + 14, y + 34 + i * 15, s, { size: 10.5, color: "--muted", font: i === 0 ? FONT_BODY : FONT_MONO }));
+}
+
+// --- geometry: Mesa's connector-location drawing scaled 1.3x (RJ-45 pointing left) ---
+const BOARD = { x: 300, y: 120, w: 588, h: 943 };
+const BW = 56, TB2X = 826;
+const pinY = n => 965 - (n - 1) * 32.5;     // TB2 pin 1 at the bottom
+const TB2 = [];
+for (let ch = 0; ch < 6; ch++) TB2.push(`ENA${ch}−`, `ENA${ch}+`, "AGND", `AOUT${ch}`);
+const USED = {
+  1: { c: "--g-drawbar", to: "DGND · CN1-16", what: "Enable switch, 0 V side" },
+  2: { c: "--g-drawbar", to: "SON · CN1-21", what: "Enable switch, input side" },
+  3: { c: "--g-spindle", to: "SG · CN6-1", what: "Analog reference" },
+  4: { c: "--g-spindle", to: "VCMD · CN6-2", what: "Speed command, ±10 V" },
+};
+
+// --- board ---
+el("rect", { x: BOARD.x, y: BOARD.y, width: BOARD.w, height: BOARD.h, rx: 10, fill: v("--pcb"), stroke: v("--pcb-edge"), "stroke-width": 2 });
+for (const cx of [329, 858]) for (const cy of [146, 1030])
+  el("circle", { cx, cy, r: 16, fill: v("--sheet"), stroke: v("--silk-dim"), "stroke-width": 1.5 });
+label(650, 146, "ANALOG SERVO INTERFACE", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(436, 300, "MESA", { color: "--silk-dim", font: FONT_DISP, size: 15, weight: 800, stretch: "80%" });
+label(436, 332, "7I83", { color: "--silk", font: FONT_DISP, size: 34, weight: 800, stretch: "75%" });
+label(436, 360, "6 × ±10 V isolated analog out", { color: "--silk-dim", size: 10.5 });
+label(TB2X + BW / 2, 102, "TB2", { font: FONT_MONO, size: 13, weight: 600, anchor: "middle" });
+
+// the FPGA-side processor and a few of the parts you'll recognise
+el("rect", { x: 520, y: 470, width: 40, height: 120, rx: 2, fill: v("--pcb-edge"), stroke: v("--silk-dim"), "stroke-width": 1 });
+el("rect", { x: 518, y: 620, width: 30, height: 56, rx: 13, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1.2 });
+for (const [cx, cy] of [[345, 200], [345, 450]]) el("circle", { cx, cy, r: 18, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1.2 });
+
+// per-channel parts beside TB2: an output amplifier and the enable optocoupler
+for (let ch = 0; ch < 6; ch++) {
+  const mid = (pinY(ch * 4 + 1) + pinY(ch * 4 + 4)) / 2;
+  el("rect", { x: 650, y: mid - 26, width: 64, height: 20, rx: 2, fill: v("--pcb-edge"), stroke: v("--silk-dim"), "stroke-width": 1 });
+  el("rect", { x: 650, y: mid + 4, width: 64, height: 20, rx: 2, fill: v("--pcb-edge"), stroke: v("--silk-dim"), "stroke-width": 1 });
+  el("rect", { x: 726, y: mid - 12, width: 22, height: 24, rx: 2, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1.2 });
+  label(640, mid, `CH${ch}`, { color: ch === 0 ? "--silk" : "--silk-dim", font: FONT_MONO, size: 10, weight: 600, anchor: "end" });
+}
+label(764, 560, "ANALOG OUT · ENA OUT 0..5", { color: "--silk-dim", font: FONT_MONO, size: 10.5, anchor: "middle", rotate: -90 });
+
+// W1: setup/operate, up = operate (default)
+for (let i = 0; i < 3; i++) el("rect", { x: 476, y: 500 + i * 15, width: 12, height: 12, rx: 1.5, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1.1 });
+el("rect", { x: 474, y: 498, width: 16, height: 29, rx: 2, fill: v("--pin-ink"), stroke: v("--silk"), "stroke-width": 1 });
+label(462, 506, "W1", { color: "--silk", font: FONT_MONO, size: 11, weight: 600, anchor: "end" });
+label(462, 522, "up: operate", { color: "--silk-dim", size: 10, anchor: "end" });
+
+// --- TB2 ---
+el("rect", { x: TB2X, y: pinY(24) - 16, width: BW, height: pinY(1) - pinY(24) + 32, rx: 4, fill: v("--block") });
+for (let n = 1; n <= 24; n++) {
+  const y = pinY(n), on = !!USED[n];
+  el("rect", { x: TB2X + 8, y: y - 12, width: BW - 16, height: 24, rx: n === 1 ? 1 : 3,
+    fill: on ? v("--block-pin") : "transparent", stroke: v("--block-pin"), "stroke-width": n === 1 ? 2.2 : 1.2, opacity: on ? 1 : 0.55 });
+  label(TB2X + BW / 2, y + 1, String(n), { color: on ? "--pin-ink" : "--block-pin", font: FONT_MONO, size: 11.5, weight: 600, anchor: "middle" });
+  label(TB2X - 8, y + 1, TB2[n - 1], { color: on ? "--silk" : "--silk-dim", font: FONT_MONO, size: 10, anchor: "end" });
+}
+label(TB2X + BW / 2, pinY(1) + 30, "PIN 1", { color: "--silk-dim", font: FONT_MONO, size: 9.5, anchor: "middle" });
+for (let ch = 0; ch < 5; ch++) {
+  // dashed separators between channels
+  const y = (pinY(ch * 4 + 4) + pinY(ch * 4 + 5)) / 2;
+  el("line", { x1: TB2X - 54, x2: TB2X - 4, y1: y, y2: y, stroke: v("--silk-dim"), "stroke-width": 1, "stroke-dasharray": "3 4" });
+}
+label(TB2X + BW + 18, (pinY(5) + pinY(24)) / 2, "channels 1–5 · free", { color: "--muted", font: FONT_MONO, size: 11, anchor: "middle", rotate: -90 });
+
+// --- TB1 power, top left, two pins side by side ---
+const TB1Y = 237, P1X = 404, P2X = 444;
+el("rect", { x: 382, y: TB1Y - 24, width: 86, height: 48, rx: 4, fill: v("--block") });
+for (const [n, x] of [[1, P1X], [2, P2X]]) {
+  el("rect", { x: x - 14, y: TB1Y - 13, width: 28, height: 26, rx: n === 1 ? 1 : 3, fill: v("--block-pin"), stroke: v("--block-pin"), "stroke-width": n === 1 ? 2.2 : 1.2 });
+  label(x, TB1Y + 1, String(n), { color: "--pin-ink", font: FONT_MONO, size: 11.5, weight: 600, anchor: "middle" });
+}
+label(P1X, TB1Y + 38, "VIN", { color: "--silk", font: FONT_MONO, size: 10.5, anchor: "middle" });
+label(P2X, TB1Y + 38, "GND", { color: "--silk", font: FONT_MONO, size: 10.5, anchor: "middle" });
+label(478, TB1Y + 1, "TB1", { color: "--silk", font: FONT_MONO, size: 12, weight: 600 });
+
+box(20, 14, 220, 92, "--v24", "8–35 V DC supply", ["about 1 W · e.g. the 24 V supply", "+ → TB1-1 · − → TB1-2"]);
+wire([[240, 40], [P2X, 40], [P2X, TB1Y - 13]], "--v0", 3);
+wire([[240, 70], [P1X, 70], [P1X, TB1Y - 13]], "--v24", 3);
+label(248, 30, "−", { size: 16, weight: 700, color: "--v0" });
+label(248, 82, "+", { size: 16, weight: 700, color: "--v24" });
+
+// --- J1 serial, bottom left, out of the left edge ---
+el("rect", { x: 264, y: 828, width: 168, height: 150, rx: 4, fill: v("--block-pin"), stroke: v("--pcb-edge"), "stroke-width": 2 });
+el("rect", { x: 276, y: 868, width: 66, height: 64, rx: 3, fill: v("--pin-ink") });
+el("rect", { x: 410, y: 838, width: 12, height: 12, fill: v("--pin-ink") });
+label(348, 1000, "J1 · SERIAL", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+box(20, 760, 220, 78, "--g-net", "7I96S via P1", ["RS-422 breakout, channel 1", "smart serial port 1"]);
+wire([[130, 838], [130, 900], [276, 900]], "--g-net", 6);
+label(140, 886, "CAT5", { size: 10, color: "--muted", font: FONT_MONO });
+
+// --- channel 0 to the spindle drive ---
+const DRV = { x: 1010, y: 800, w: 270, h: 216 };
+el("rect", { x: DRV.x, y: DRV.y, width: DRV.w, height: DRV.h, rx: 6, fill: v("--sheet"), stroke: v("--muted"), "stroke-width": 1.6 });
+label(DRV.x + 16, DRV.y + 22, "Spindle servo drive", { size: 14, weight: 700, font: FONT_DISP, stretch: "85%" });
+label(DRV.x + 16, DRV.y + 40, "SDF series, analog speed mode", { size: 10.5, color: "--muted" });
+for (const [n, u] of Object.entries(USED)) {
+  const y = pinY(+n), x0 = TB2X + BW - 8;
+  wire([[x0, y], [DRV.x, y]], u.c, 3);
+  dot(x0, y, u.c, 3.5);
+  el("rect", { x: DRV.x - 5, y: y - 6, width: 10, height: 12, rx: 2, fill: v(u.c) });
+  label(DRV.x + 16, y + 1, u.to, { size: 11, font: FONT_MONO, weight: 600 });
+}
+label(DRV.x + 16, DRV.y + 194, "COM+ (CN1-8) → +24 V", { size: 10.5, color: "--muted", font: FONT_MONO });
+// the shield around the analog pair
+el("ellipse", { cx: 960, cy: (pinY(3) + pinY(4)) / 2, rx: 22, ry: 30, fill: "none", stroke: v("--muted"), "stroke-width": 1.2, "stroke-dasharray": "4 3" });
+label(946, pinY(4) - 72, "shielded", { size: 10.5, color: "--muted", anchor: "middle" });
+label(946, pinY(4) - 58, "twisted pair,", { size: 10.5, color: "--muted", anchor: "middle" });
+label(946, pinY(4) - 44, "shield at 7I83", { size: 10.5, color: "--muted", anchor: "middle" });
+// separate drive-ground wire back to 7I83 TB1 GND
+wire([[DRV.x + DRV.w / 2, DRV.y + DRV.h], [DRV.x + DRV.w / 2, 1046]], "--v0", 2.2, { "stroke-dasharray": "6 4" });
+label(DRV.x + DRV.w / 2, 1062, "signal ground → 7I83 TB1-2", { size: 10.5, color: "--v0", font: FONT_MONO, anchor: "middle" });
+label(DRV.x + DRV.w / 2, 1077, "(a separate wire)", { size: 10.5, color: "--v0", font: FONT_MONO, anchor: "middle" });
+
+// what drives it
+box(1010, 560, 270, 108, "--g-spindle", "From LinuxCNC", ["M3/M4 S… sets the speed", "M3: −0.0034 V per rpm (scale.0)", "M4: +0.0034 V per rpm (scale.1)", "enable: spindle.0.on"]);
+
+// --- the pin table ---
+const tbody = document.getElementById("pins");
+const hal = s => `<span class="hal">${s}</span>`;
+function row(cells, cls, sw) {
+  const tr = document.createElement("tr"); if (cls) tr.className = cls;
+  tr.innerHTML = cells.map((c, i) => i === 0 ? `<td class="pin"><span class="sw" style="background:var(${sw})"></span>${c}</td>` : `<td>${c}</td>`).join("");
+  tbody.appendChild(tr);
+}
+const group = s => { const tr = document.createElement("tr"); tr.className = "group"; tr.innerHTML = `<td colspan="4">${s}</td>`; tbody.appendChild(tr); };
+
+group("Power and serial");
+row(["TB1-1 · VIN", "Power, 8–35 V DC", "Supply +", hal("—")], null, "--v24");
+row(["TB1-2 · GND", "Ground (same as analog ground)", "Supply −, and a separate wire from the drive's signal ground", hal("—")], null, "--v0");
+row(["J1", "Smart serial to the 7I96S", "Straight CAT5 to channel 1 of the RS-422 breakout on the 7I96S's P1", hal("hm2_7i96s.0.7i83.1.1")], null, "--g-net");
+
+group("TB2 · channel 0, the spindle");
+row(["TB2-4 · AOUT0", "Spindle speed command, ±10 V", "→ drive VCMD (CN6-2), one wire of a shielded twisted pair", hal("analogout0 ← mux2.0.out (scale.0 for M3, scale.1 for M4)")], null, "--g-spindle");
+row(["TB2-3 · AGND", "Analog reference for AOUT0", "→ drive SG (CN6-1), the other wire of the pair; shield here only", hal("—")], null, "--g-spindle");
+row(["TB2-2 · ENA0+", "Enable switch, + side", "→ drive SON (CN1-21)", hal("analogena0 ← spindle-enable ← spindle.0.on")], null, "--g-drawbar");
+row(["TB2-1 · ENA0−", "Enable switch, − side", "→ drive DGND / 0 V (CN1-16)", hal("analogena0")], null, "--g-drawbar");
+
+group("TB2 · channels 1 to 5");
+row(["TB2-5 to 24", "ENA1–5 and AOUT1–5 with their AGNDs", "Free", hal("not in any HAL file")], "unused", "--dim");
+</script>

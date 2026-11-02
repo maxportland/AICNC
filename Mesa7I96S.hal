@@ -266,12 +266,14 @@ setp joint.3.jog-enable TRUE
 net drawbar-lift motion.digital-out-00 => hm2_7i96s.0.7i84.1.0.output-05
 
 # ---camera line laser---
-# The laser (VLM-650-28 LPT, 5V) is switched by the 7i96S's OUT0, a floating DC SSR:
-# TB1 +5VP -> TB3-14 OUT0+, TB3-13 OUT0- -> laser +, laser - -> TB1 GND. On from G-code
-# (M64 P1 / M65 P1) or from the screen (milo.laser, joined to laser-or.in1 in custom_postgui.hal).
+# The laser (VLM-650-28 LPT, 2.6-6V) is switched by 7i84 output 2, the one output set to sink
+# (output_sink above): a 24V->5V converter fed from the 7i84's field power gives the laser its 5V,
+# laser + -> converter 5V out, laser - -> 7i84 TB3-19 (OUTPUT2), converter GND -> 7i84 TB1 GND.
+# Never on a sourcing output: they give the full field voltage. On from G-code (M64 P1 / M65 P1)
+# or from the screen (milo.laser, joined to laser-or.in1 in custom_postgui.hal).
 addf laser-or servo-thread
 net laser-gcode  motion.digital-out-01 => laser-or.in0
-net laser-on     laser-or.out => hm2_7i96s.0.ssr.00.out-00
+net laser-on     laser-or.out => hm2_7i96s.0.7i84.1.0.output-02
 
 #*******************
 #  SPINDLE

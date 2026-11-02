@@ -1,0 +1,400 @@
+<title>Milo 7I84U Wiring</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,500..800&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one wide schematic sheet (board in the middle, devices fanned out to the right, supply and
+   controller on the left), then a pin-by-pin table and the rules that make the wiring right. */
+:root {
+  --bg: #eef2f1;
+  --sheet: #fbfcfc;
+  --ink: #18221f;
+  --muted: #5d6b67;
+  --line: #ccd6d3;
+  --pcb: #1f4a3c;
+  --pcb-edge: #163729;
+  --silk: #e9f1ec;
+  --silk-dim: #8fb3a3;
+  --block: #2f7a55;
+  --block-pin: #d9e6df;
+  --pin-ink: #10261c;
+  --v24: #d1392b;
+  --v0: #2459b3;
+  --g-home: #c08400;
+  --g-probe: #0b8a8f;
+  --g-estop: #c3195d;
+  --g-drawbar: #6b4cc9;
+  --g-spindle: #b05a17;
+  --dim: #b9c5c1;
+  --chip: #e2ebe8;
+  --display: "Archivo", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101614; --sheet: #161e1b; --ink: #e3ebe8; --muted: #93a39e; --line: #2c3935;
+    --pcb: #1c4436; --pcb-edge: #2b5d4a; --silk: #e3efe8; --silk-dim: #7ea595;
+    --block: #2f7a55; --block-pin: #cfe0d6; --pin-ink: #0e2219;
+    --v24: #f05a4a; --v0: #5b8ff0;
+    --g-home: #e3a61c; --g-probe: #2bb7bc; --g-estop: #f0508e; --g-drawbar: #9a80f0; --g-spindle: #e0843f;
+    --dim: #3c4a46; --chip: #22302b;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101614; --sheet: #161e1b; --ink: #e3ebe8; --muted: #93a39e; --line: #2c3935;
+  --pcb: #1c4436; --pcb-edge: #2b5d4a; --silk: #e3efe8; --silk-dim: #7ea595;
+  --block: #2f7a55; --block-pin: #cfe0d6; --pin-ink: #0e2219;
+  --v24: #f05a4a; --v0: #5b8ff0;
+  --g-home: #e3a61c; --g-probe: #2bb7bc; --g-estop: #f0508e; --g-drawbar: #9a80f0; --g-spindle: #e0843f;
+  --dim: #3c4a46; --chip: #22302b;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 56px; display: grid; gap: 28px; }
+header { display: grid; gap: 6px; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-stretch: 78%; font-weight: 800; font-size: clamp(30px, 5vw, 46px); line-height: 1.02; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--display); font-stretch: 85%; font-weight: 700; font-size: 22px; margin: 0; text-wrap: balance; }
+h3 { font-family: var(--display); font-stretch: 90%; font-weight: 700; font-size: 16px; margin: 0; }
+p { margin: 0; max-width: 68ch; }
+.lede { color: var(--muted); }
+code, .mono { font-family: var(--mono); font-size: .86em; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font-family: var(--mono); font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--chip); color: var(--ink); }
+.chip b { font-weight: 600; }
+
+.sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; }
+.sheet svg { display: block; width: 100%; min-width: 1040px; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 12px 18px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); min-width: 1040px; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.legend i { display: inline-block; width: 22px; height: 4px; border-radius: 2px; }
+
+section { display: grid; gap: 14px; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--sheet); }
+table { border-collapse: collapse; width: 100%; min-width: 860px; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-family: var(--mono); font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); font-weight: 600; background: var(--sheet); }
+tr:last-child td { border-bottom: 0; }
+td.pin { font-family: var(--mono); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+td.pin .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+td .hal { font-family: var(--mono); font-size: 12px; color: var(--muted); display: block; }
+tr.group td { background: var(--chip); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding-block: 6px; }
+tr.unused td { color: var(--muted); }
+
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.rule { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.rule ul, .checks { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+.rule li, .checks li { max-width: 68ch; }
+.checks li::marker { color: var(--muted); }
+.note { font-size: 13px; color: var(--muted); }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">AICNC · Mesa7I96S.hal · 7I84U on smart serial (hm2_7i96s.0.7i84.1.0)</div>
+    <h1>Milo 7I84U wiring</h1>
+    <p class="lede">Every 7I84U terminal this config uses, drawn from the HAL file as it stands today. Laid out like the real card, with the RJ-45 pointing left: TB3 runs down the right edge with pin 1 at the bottom, so the outputs are at the top and the inputs at the bottom. Field power is assumed to be 24&nbsp;V DC.</p>
+    <div class="chips">
+      <span class="chip"><b>5</b> outputs used (TB3-17, 19, 22, 23, 24)</span>
+      <span class="chip"><b>7</b> inputs used (TB3-1 to 7)</span>
+      <span class="chip">outputs <b>sourcing</b> except OUT2 (sinking: the laser)</span>
+      <span class="chip">TB2 <b>not used</b></span>
+    </div>
+  </header>
+
+  <div class="sheet">
+    <svg id="diagram" viewBox="0 -8 1310 1010" role="img" aria-label="Wiring diagram of the Mesa 7I84U: power on TB1, smart serial on J1, and inputs and outputs on TB3"></svg>
+    <div class="legend">
+      <span><i style="background:var(--v24)"></i>+24 V field supply</span>
+      <span><i style="background:var(--v0)"></i>0 V / ground</span>
+      <span><i style="background:var(--g-home)"></i>Homing</span>
+      <span><i style="background:var(--g-probe)"></i>Probe, tool setter and camera laser</span>
+      <span><i style="background:var(--g-estop)"></i>E-stop</span>
+      <span><i style="background:var(--g-drawbar)"></i>Power drawbar</span>
+      <span><i style="background:var(--g-spindle)"></i>Spindle and coolant</span>
+    </div>
+  </div>
+
+  <section>
+    <h2>Pin by pin</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Terminal</th><th>What's on it</th><th>Wire it</th><th>In HAL</th></tr></thead>
+        <tbody id="pins"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>How the 7I84U side behaves</h2>
+    <div class="rules">
+      <div class="rule">
+        <h3>Inputs see voltage</h3>
+        <ul>
+          <li>An input is on when it's fed field voltage. A wire to ground or an open wire reads off. Each input has 22&nbsp;kΩ to ground inside.</li>
+          <li>At 24&nbsp;V it turns on above 14.4&nbsp;V and off below 9.6&nbsp;V.</li>
+          <li>Wire every switch from +24&nbsp;V to the input. The home switches, probe, tool setter and E-stop are all normally closed, so a cut wire reads as triggered, which is the safe way to fail. That's why HAL uses the <code>-not</code> pins for the ones that trigger by opening.</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>Outputs supply +24 V</h3>
+        <ul>
+          <li>In sourcing mode the output terminal itself goes to +24&nbsp;V when on. Wire the load's + to the terminal and its − to 0&nbsp;V. Don't feed +24&nbsp;V in from another source.</li>
+          <li>500&nbsp;mA per output, and 2&nbsp;A in total for each group of eight (OUT0–7 share one driver chip). An output trips at about 1.5&nbsp;A on a short.</li>
+          <li>No flyback diodes needed on valves or relay coils. The drivers have clamps built in.</li>
+          <li>OUT2 is the exception: it's set to sink (<code>output_sink 0x0004</code>), so when on it connects its pin to 0&nbsp;V. That lets it switch the 5&nbsp;V laser, whose + is fed from a small buck converter.</li>
+        </ul>
+      </div>
+      <div class="rule">
+        <h3>Power on TB1</h3>
+        <ul>
+          <li>VFIELDA (TB1-3, 4) powers TB3 and sets its input thresholds. VFIELDB (TB1-1, 2) does the same for TB2. Supply both or the card won't start.</li>
+          <li>Wire VFIELD straight to the supply. Never switch it through a relay contact or a switch.</li>
+          <li>VIN (TB1-5) can stay empty: jumper W1 in its left-hand (default) position takes it from VFIELDB.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Check these before relying on it</h2>
+    <ul class="checks">
+      <li><b>Field voltage.</b> This page assumes 24&nbsp;V DC. The valves, relays and the CL86Y's ENA must suit the same voltage. The CL86Y takes 5–24&nbsp;V on ENA.</li>
+      <li><b>Drawbar driver alarm.</b> If the machine faults as soon as it's turned on, the CL86Y's ALM is the other polarity. Change <code>input-05</code> to <code>input-05-not</code> (Mesa7I96S.hal line 249).</li>
+      <li><b>Drawbar driver enable.</b> OUT7 is inverted, so it's on (driver disabled) while the machine is off. If the A motor goes limp when the machine is on, set <code>output-07-invert</code> to false (line 256).</li>
+      <li><b>Drawbar valve.</b> <code>M64 P0</code> turns OUT5 on and should lower the motor (<code>LOWER_IS_ON = 1</code>). Before connecting the valve, meter TB3-22 to ground: about 24&nbsp;V after <code>M64 P0</code>, 0&nbsp;V after <code>M65 P0</code>.</li>
+      <li><b>The laser's 5&nbsp;V.</b> Set the buck converter to 5&nbsp;V before connecting the laser (it runs on 2.6–6&nbsp;V). Its ground must be this card's field ground. The 7I96S's +5VP won't work, because its ground is isolated from the 7I84U's field side. Never move the laser to a sourcing output: those give the full 24&nbsp;V.</li>
+      <li><b>Current.</b> Anything on OUT0 (spindle power) bigger than a small relay coil, such as a contactor drawing more than 500&nbsp;mA, needs an interposing relay.</li>
+      <li><b>Smart serial cable.</b> The 7I84U's J1 is an RJ-45 for a straight CAT5 cable. It goes to channel 0 of the RS-422 breakout card on the 7I96S's P1 header. In this firmware, smart-serial port 1 is on P1, and the 7I83 is on channel 1. It doesn't go to the 7I96S's TB2 serial pins, which are port 0 and unused.</li>
+    </ul>
+    <p class="note">Sources: Mesa7I96S.hal (lines 29–35, 249–276, 390–426), the [DRAWBAR] section of Mesa7I96S.ini, the Mesa 7I84U and 7I96S manuals, the 7I96S firmware pinout (mesaflash), and the CL86T v4 manual in reference_documents.</p>
+  </section>
+</div>
+
+<script>
+const IN = "in", OUT = "out";
+// Every TB3 terminal the HAL file uses. side: which rail the device's other lead goes to.
+const USED = {
+  1:  { g: "home",    io: IN,  title: "X home switch",            sub: "NC · opens at home",              hal: "home-x ← input-00-not", wire: "+24 V → switch → TB3-1" },
+  2:  { g: "home",    io: IN,  title: "Y home switch",            sub: "NC · opens at home",              hal: "home-y ← input-01-not", wire: "+24 V → switch → TB3-2" },
+  3:  { g: "home",    io: IN,  title: "Z home switch",            sub: "NC · opens at home",              hal: "home-z ← input-02-not", wire: "+24 V → switch → TB3-3" },
+  4:  { g: "probe",   io: IN,  title: "Touch probe",              sub: "NC · opens on touch",             hal: "probe-workpiece ← input-03-not → probe-or → motion.probe-input", wire: "+24 V → probe → TB3-4" },
+  5:  { g: "estop",   io: IN,  title: "E-stop loop",              sub: "NC buttons in series",            hal: "estop-ext ← input-04 → iocontrol.0.emc-enable-in", wire: "+24 V → every E-stop button in series → TB3-5" },
+  6:  { g: "drawbar", io: IN,  title: "CL86Y drawbar driver ALM", sub: "ALM+ to +24 V · ALM− to TB3-6",    hal: "a-fault ← input-05 → joint.3.amp-fault-in", wire: "+24 V → ALM+, ALM− → TB3-6" },
+  7:  { g: "probe",   io: IN,  title: "Tool setter",              sub: "NC · opens on touch · debounced", hal: "raw-toolsetter-in ← input-06-not → dbounce.0 → probe-or", wire: "+24 V → setter → TB3-7" },
+  17: { g: "spindle", io: OUT, title: "Spindle power relay",      sub: "On while the machine is on",      hal: "machine-is-enabled → output-00", wire: "TB3-17 → coil +, coil − → 0 V" },
+  19: { g: "probe",   io: OUT, sink: true, title: "Camera line laser (−)", sub: "Sinking · M64 P1 or Laser button", hal: "laser-on ← laser-or (M64 P1, milo.laser) → output-02", wire: "5 V buck + → laser +, laser − → TB3-19" },
+  22: { g: "drawbar", io: OUT, title: "Drawbar lift valve",       sub: "M64 P0 lowers · M65 P0 raises",   hal: "drawbar-lift ← motion.digital-out-00 → output-05", wire: "TB3-22 → valve +, valve − → 0 V" },
+  23: { g: "spindle", io: OUT, title: "Mist coolant",             sub: "M7 on · M9 off",                  hal: "coolant-mist ← iocontrol.0.coolant-mist → output-06", wire: "TB3-23 → solenoid/relay +, − → 0 V" },
+  24: { g: "drawbar", io: OUT, title: "CL86Y drawbar driver ENA", sub: "Inverted · on = driver disabled", hal: "a-enable ← joint.3.amp-enable-out → output-07 (invert true)", wire: "TB3-24 → ENA+, ENA− → 0 V" },
+};
+const GROUP_VAR = { home: "--g-home", probe: "--g-probe", estop: "--g-estop", drawbar: "--g-drawbar", spindle: "--g-spindle" };
+const ioName = n => n <= 16 ? `INPUT${n - 1}` : `OUTPUT${n - 17}`;
+const halPin = n => n <= 16 ? `input-${String(n - 1).padStart(2, "0")}` : `output-${String(n - 17).padStart(2, "0")}`;
+
+const NS = "http://www.w3.org/2000/svg";
+const svg = document.getElementById("diagram");
+function el(tag, attrs = {}, text) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  if (text != null) e.textContent = text;
+  svg.appendChild(e);
+  return e;
+}
+const v = name => `var(${name})`;
+const FONT_MONO = "JetBrains Mono, ui-monospace, monospace";
+const FONT_DISP = "Archivo, Arial Narrow, sans-serif";
+const FONT_BODY = "IBM Plex Sans, system-ui, sans-serif";
+function label(x, y, s, o = {}) {
+  return el("text", { x, y, fill: v(o.color || "--ink"), "font-family": o.font || FONT_BODY, "font-size": o.size || 12,
+    "font-weight": o.weight || 400, "text-anchor": o.anchor || "start", "dominant-baseline": "middle",
+    ...(o.stretch ? { "font-stretch": o.stretch } : {}) }, s);
+}
+function wire(points, color, width = 2.5) {
+  el("polyline", { points: points.map(p => p.join(",")).join(" "), fill: "none", stroke: v(color), "stroke-width": width,
+    "stroke-linejoin": "round", "stroke-linecap": "round" });
+}
+function dot(x, y, color) { el("circle", { cx: x, cy: y, r: 4, fill: v(color) }); }
+
+// --- geometry: laid out like Mesa's connector-location drawing (J1 pointing left, TB1 top left,
+// TB2 in the middle, TB3 on the right edge; pin 1 of each terminal block is at the bottom) ---
+const BOARD = { x: 260, y: 30, w: 560, h: 960 };
+const BW = 56;                                   // terminal block width
+const TB2X = 549, TB3X = 754;
+const pinY = n => 891 - (n - 1) * 33.1;          // TB2 and TB3 pins 1..24, pin 1 at the bottom
+const TB1X = 350, TB1W = 56;
+const tb1Y = n => 358 - (n - 1) * 32.6;          // TB1 pins 1..8, pin 1 at the bottom
+const DEV = { x: 900, w: 290 };
+const RAIL = 1262;
+
+// --- board ---
+el("rect", { x: BOARD.x, y: BOARD.y, width: BOARD.w, height: BOARD.h, rx: 10, fill: v("--pcb"), stroke: v("--pcb-edge"), "stroke-width": 2 });
+for (const cx of [293, 582, 790]) for (const cy of [64, 958])
+  el("circle", { cx, cy, r: 15, fill: v("--sheet"), stroke: v("--silk-dim"), "stroke-width": 1.5 });
+
+// block names above the board, as on Mesa's drawing
+label(TB1X + TB1W / 2, 12, "TB1", { font: FONT_MONO, size: 13, weight: 600, anchor: "middle" });
+label(TB2X + BW / 2, 12, "TB2 · not used", { font: FONT_MONO, size: 13, weight: 600, anchor: "middle" });
+label(TB3X + BW / 2, 12, "TB3", { font: FONT_MONO, size: 13, weight: 600, anchor: "middle" });
+
+label(690, 52, "FIELD I/O", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(690, 70, "INTERFACE", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(616, 610, "MESA", { color: "--silk-dim", font: FONT_DISP, size: 15, weight: 800, stretch: "80%" });
+label(616, 642, "7I84U", { color: "--silk", font: FONT_DISP, size: 32, weight: 800, stretch: "75%" });
+
+// a few of the parts you'll recognise on the card: the output driver chips and the crystal
+for (const [x, y] of [[640, 140]]) {
+  el("rect", { x, y, width: 34, height: 92, rx: 2, fill: v("--pcb-edge"), stroke: v("--silk-dim"), "stroke-width": 1 });
+}
+el("rect", { x: 450, y: 470, width: 46, height: 26, rx: 12, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1.2 });
+
+// jumpers: W1 above TB1, W3 below it
+function jumper(x, y, name, note) {
+  for (let i = 0; i < 3; i++) el("rect", { x: x + i * 18, y, width: 14, height: 14, rx: 2, fill: "none", stroke: v("--silk-dim"), "stroke-width": 1.2 });
+  el("rect", { x: x - 2, y: y - 2, width: 34, height: 18, rx: 3, fill: v("--pin-ink"), stroke: v("--silk"), "stroke-width": 1 });
+  label(x - 10, y + 8, name, { color: "--silk", font: FONT_MONO, size: 11, weight: 600, anchor: "end" });
+  label(x - 2, y + 30, note, { color: "--silk-dim", size: 10.5 });
+}
+jumper(370, 52, "W1", "left (default): VIN from VFIELDB");
+jumper(316, 420, "W3", "left: operate");
+
+// J1 RJ-45 at the bottom left, pointing out of the board's left edge
+el("rect", { x: 228, y: 768, width: 156, height: 136, rx: 4, fill: v("--block-pin"), stroke: v("--pcb-edge"), "stroke-width": 2 });
+el("rect", { x: 240, y: 806, width: 64, height: 60, rx: 3, fill: v("--pin-ink") });
+el("rect", { x: 362, y: 778, width: 12, height: 12, fill: v("--pin-ink") });
+label(306, 924, "J1 · SERIAL", { color: "--silk", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+
+// a terminal block, pin 1 at the bottom (its square pad filled on the card)
+function block(x, w, yOf, count, live) {
+  el("rect", { x, y: yOf(count) - 18, width: w, height: yOf(1) - yOf(count) + 36, rx: 4, fill: v("--block") });
+  for (let n = 1; n <= count; n++) {
+    const y = yOf(n), on = live(n);
+    el("rect", { x: x + 8, y: y - 12, width: w - 16, height: 24, rx: n === 1 ? 1 : 3,
+      fill: on ? v("--block-pin") : "transparent", stroke: v("--block-pin"), "stroke-width": n === 1 ? 2.2 : 1.2, opacity: on ? 1 : 0.55 });
+    label(x + w / 2, y + 1, String(n), { color: on ? "--pin-ink" : "--block-pin", font: FONT_MONO, size: 11.5, weight: 600, anchor: "middle" });
+  }
+  label(x + w / 2, yOf(1) + 32, "PIN 1", { color: "--silk-dim", font: FONT_MONO, size: 9.5, anchor: "middle" });
+}
+
+// --- TB2: on the card, nothing wired ---
+block(TB2X, BW, pinY, 24, () => false);
+const TB2_MARKS = { 24: "OUT15", 17: "OUT8", 16: "IN31", 1: "IN16" };
+for (const [n, s] of Object.entries(TB2_MARKS)) label(TB2X + BW + 8, pinY(+n) + 1, s, { color: "--silk-dim", font: FONT_MONO, size: 11 });
+
+// --- TB3 ---
+const shortName = n => n <= 16 ? `IN${n - 1}` : `OUT${n - 17}`;
+block(TB3X, BW, pinY, 24, n => USED[n] && !USED[n].unused);
+for (let n = 1; n <= 24; n++) {
+  const live = USED[n] && !USED[n].unused;
+  label(TB3X - 8, pinY(n) + 1, shortName(n), { color: live ? "--silk" : "--silk-dim", font: FONT_MONO, size: 11, anchor: "end" });
+}
+// outputs above the dashed line, inputs below
+const split = (pinY(16) + pinY(17)) / 2;
+el("line", { x1: TB3X - 60, x2: TB3X - 4, y1: split, y2: split, stroke: v("--silk-dim"), "stroke-width": 1, "stroke-dasharray": "3 4" });
+
+// --- devices on TB3 ---
+const inPins = Object.keys(USED).map(Number).filter(n => USED[n].io === IN);
+const outPins = Object.keys(USED).map(Number).filter(n => USED[n].io === OUT);
+
+// rails: 0 V beside the outputs at the top, +24 V beside the inputs at the bottom
+const r0top = pinY(24) - 30, r0bot = pinY(Math.min(...outPins));
+wire([[RAIL, r0top], [RAIL, r0bot]], "--v0", 3);
+label(RAIL, r0top - 12, "0 V", { color: "--v0", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+const r24top = pinY(Math.max(...inPins)) - 30, r24bot = pinY(1);
+wire([[RAIL, r24top], [RAIL, r24bot]], "--v24", 3);
+label(RAIL, r24top - 12, "+24 V", { color: "--v24", font: FONT_MONO, size: 12, weight: 600, anchor: "middle" });
+label(RAIL + 22, (r0top + r0bot) / 2, "field supply −", { color: "--muted", size: 11, anchor: "middle" }).setAttribute("transform", `rotate(90 ${RAIL + 22} ${(r0top + r0bot) / 2})`);
+label(RAIL + 22, (r24top + r24bot) / 2, "field supply +", { color: "--muted", size: 11, anchor: "middle" }).setAttribute("transform", `rotate(90 ${RAIL + 22} ${(r24top + r24bot) / 2})`);
+
+for (const [k, u] of Object.entries(USED)) {
+  const n = Number(k), y = pinY(n);
+  if (u.unused) {
+    label(TB3X + BW + 16, y + 1, `${u.title} · ${u.sub}`, { color: "--muted", size: 11 });
+    continue;
+  }
+  const c = GROUP_VAR[u.g];
+  const bx = DEV.x, bw = u.sink ? 196 : DEV.w, bh = 29;
+  wire([[TB3X + BW - 8, y], [bx, y]], c, 3);
+  dot(TB3X + BW - 8, y, c);
+  el("rect", { x: bx, y: y - bh / 2, width: bw, height: bh, rx: 4, fill: v("--sheet"), stroke: v(c), "stroke-width": 1.6 });
+  el("rect", { x: bx, y: y - bh / 2, width: 5, height: bh, fill: v(c) });
+  label(bx + 14, y - 6, u.title, { size: 12, weight: 600 });
+  label(bx + 14, y + 7.5, u.sub, { size: 10, color: "--muted" });
+  label(bx - 8, y - 8, halPin(n), { size: 9.5, color: "--muted", font: FONT_MONO, anchor: "end" });
+  if (u.sink) {
+    // the laser's 5 V comes from a buck converter on the field supply, whose ground is the 0 V rail
+    const cx = 1112, cw = 124, top = pinY(20) - 17, h = y - top + 17;
+    wire([[bx + bw, y], [cx, y]], "--v24", 2.2);
+    el("rect", { x: cx, y: top, width: cw, height: h, rx: 4, fill: v("--sheet"), stroke: v("--v24"), "stroke-width": 1.6 });
+    label(cx + 10, top + 13, "24→5 V buck", { size: 11.5, weight: 600 });
+    label(cx + 10, top + 29, "IN+ ← +24 V (TB1-3/4)", { size: 9, color: "--muted", font: FONT_MONO });
+    label(cx + 10, y + 1, "OUT+ → laser +", { size: 9, color: "--muted", font: FONT_MONO });
+    wire([[cx + cw, pinY(20)], [RAIL, pinY(20)]], "--v0", 2.2);
+    dot(RAIL, pinY(20), "--v0");
+    continue;
+  }
+  const rail = u.io === IN ? "--v24" : "--v0";
+  wire([[bx + bw, y], [RAIL, y]], rail, 2.2);
+  dot(RAIL, y, rail);
+}
+
+// --- TB1 and the supply ---
+const TB1 = ["VFIELDB", "VFIELDB", "VFIELDA", "VFIELDA", "VIN", "GND", "GND", "GND"];
+const tb1Live = { 1: "--v24", 2: "--v24", 3: "--v24", 4: "--v24", 6: "--v0" };
+block(TB1X, TB1W, tb1Y, 8, n => !!tb1Live[n]);
+for (let n = 1; n <= 8; n++)
+  label(TB1X + TB1W + 10, tb1Y(n) + 1, TB1[n - 1] + (n === 5 ? " (W1)" : n >= 7 ? " spare" : ""), { color: tb1Live[n] ? "--silk" : "--silk-dim", font: FONT_MONO, size: 10.5 });
+label(270, 490, "TB1-1, 2 power TB2", { color: "--silk-dim", size: 10.5 });
+label(270, 506, "TB1-3, 4 power TB3", { color: "--silk-dim", size: 10.5 });
+
+const PSU = { x: 20, y: 166, w: 180, h: 214 };
+el("rect", { x: PSU.x, y: PSU.y, width: PSU.w, height: PSU.h, rx: 6, fill: v("--sheet"), stroke: v("--muted"), "stroke-width": 1.5 });
+label(PSU.x + 14, PSU.y + 24, "24 V DC supply", { size: 14, weight: 700, font: FONT_DISP, stretch: "85%" });
+label(PSU.x + 14, PSU.y + 44, "field power", { size: 11, color: "--muted" });
+label(PSU.x + 14, PSU.y + 62, "wire direct, no switch", { size: 11, color: "--muted" });
+const minusY = tb1Y(6), plusY = 312;
+label(PSU.x + PSU.w - 12, minusY, "−", { size: 18, weight: 700, color: "--v0", anchor: "end" });
+label(PSU.x + PSU.w - 12, plusY, "+", { size: 18, weight: 700, color: "--v24", anchor: "end" });
+const busX = 236;
+wire([[PSU.x + PSU.w, minusY], [TB1X + 8, minusY]], "--v0", 3);
+wire([[PSU.x + PSU.w, plusY], [busX, plusY]], "--v24", 3);
+wire([[busX, tb1Y(4)], [busX, tb1Y(1)]], "--v24", 3);
+for (let n = 1; n <= 4; n++) { wire([[busX, tb1Y(n)], [TB1X + 8, tb1Y(n)]], "--v24", 2.5); dot(busX, tb1Y(n), "--v24"); }
+label(PSU.x, PSU.y + PSU.h + 20, "+ also feeds the +24 V rail on the right,", { size: 11, color: "--muted" });
+label(PSU.x, PSU.y + PSU.h + 36, "− the 0 V rail", { size: 11, color: "--muted" });
+
+// --- 7I96S and the serial cable into J1 ---
+const CTL = { x: 20, y: 560, w: 180, h: 112 };
+el("rect", { x: CTL.x, y: CTL.y, width: CTL.w, height: CTL.h, rx: 6, fill: v("--sheet"), stroke: v("--muted"), "stroke-width": 1.5 });
+label(CTL.x + 14, CTL.y + 24, "7I96S via P1", { size: 14, weight: 700, font: FONT_DISP, stretch: "85%" });
+label(CTL.x + 14, CTL.y + 44, "RS-422 breakout, ch 0", { size: 11, color: "--muted" });
+label(CTL.x + 14, CTL.y + 62, "Ethernet 10.10.10.10", { size: 11, color: "--muted" });
+label(CTL.x + 14, CTL.y + 86, "hm2_7i96s.0.7i84.1.0", { size: 10, color: "--muted", font: FONT_MONO });
+el("path", { d: `M 110 ${CTL.y + CTL.h} C 110 836, 150 836, 240 836`, fill: "none", stroke: v("--muted"), "stroke-width": 6, "stroke-linecap": "round" });
+label(122, 740, "CAT5", { size: 10.5, color: "--muted", font: FONT_MONO });
+
+// --- the pin table ---
+const tbody = document.getElementById("pins");
+function row(html, cls) { const tr = document.createElement("tr"); if (cls) tr.className = cls; tr.innerHTML = html; tbody.appendChild(tr); }
+row(`<td colspan="4">Power · TB1</td>`, "group");
+row(`<td class="pin"><span class="sw" style="background:var(--v24)"></span>TB1-1, 2, 3, 4</td><td>VFIELDB and VFIELDA, field power</td><td>24 V supply +, wired direct</td><td><span class="hal">powers TB2 (1–2) and TB3 (3–4)</span></td>`);
+row(`<td class="pin"><span class="sw" style="background:var(--v0)"></span>TB1-6</td><td>Ground (7 and 8 are spare grounds)</td><td>24 V supply −</td><td><span class="hal">common for VIN and VFIELD</span></td>`);
+row(`<td class="pin"><span class="sw" style="background:var(--dim)"></span>TB1-5</td><td>VIN, logic power</td><td>Leave empty with W1 in its default left position</td><td><span class="hal">—</span></td>`, "unused");
+row(`<td class="pin"><span class="sw" style="background:var(--muted)"></span>J1</td><td>Smart serial to the 7I96S</td><td>Straight CAT5 to channel 0 of the RS-422 breakout on the 7I96S's P1</td><td><span class="hal">hm2_7i96s.0.7i84.1.0</span></td>`);
+row(`<td colspan="4">Inputs · TB3 (on when fed +24 V)</td>`, "group");
+for (const n of inPins) {
+  const u = USED[n];
+  row(`<td class="pin"><span class="sw" style="background:var(${GROUP_VAR[u.g]})"></span>TB3-${n} · ${ioName(n)}</td><td>${u.title}<span class="hal">${u.sub}</span></td><td>${u.wire}</td><td><span class="hal">${u.hal}</span></td>`);
+}
+row(`<td colspan="4">Outputs · TB3 (give +24 V when on, 500 mA max)</td>`, "group");
+for (const n of [17, 19, 22, 23, 24]) {
+  const u = USED[n];
+  row(`<td class="pin"><span class="sw" style="background:var(${GROUP_VAR[u.g]})"></span>TB3-${n} · ${ioName(n)}</td><td>${u.title}<span class="hal">${u.sub}</span></td><td>${u.wire}</td><td><span class="hal">${u.hal}</span></td>`);
+}
+row(`<td colspan="4">Everything else</td>`, "group");
+row(`<td class="pin"><span class="sw" style="background:var(--dim)"></span>TB3-8 to 16, 18, 20, 21</td><td>INPUT7–15, OUTPUT1, 3, 4: free</td><td>—</td><td><span class="hal">not in any HAL file</span></td>`, "unused");
+row(`<td class="pin"><span class="sw" style="background:var(--dim)"></span>TB2-1 to 24</td><td>INPUT16–31, OUTPUT8–15: free</td><td>—</td><td><span class="hal">needs VFIELDB powered anyway</span></td>`, "unused");
+</script>

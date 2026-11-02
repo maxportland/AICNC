@@ -56,7 +56,7 @@ This configuration provides a production-ready LinuxCNC setup optimized for a 3-
 - **Step Generators**: 4 (X, Y, Z, drawbar)
 - **PWM Generators**: 1 (loaded but unused; the spindle runs from the 7I83 analog output)
 - **Encoders**: 1 (spindle feedback)
-- **Smart Serial Ports**: 1 (7I84 I/O expansion)
+- **Smart Serial**: port 1, on the P1 header through an RS-422 breakout: the 7I84 (channel 0, field I/O) and the 7I83 (channel 1, spindle analog out)
 
 ### Axis Configuration
 - **X-Axis (Joint 0)**: Closed-loop stepper, 644 steps/mm
@@ -102,6 +102,19 @@ after editing the INI.
 - **Limit Switches**: None wired. Soft limits only, which LinuxCNC enforces after homing
 - **Tool Sensor**: Configured at X=5.446, Y=78.012, Z=-130.00
 - **Probe**: Basic probe support enabled
+- **Camera line laser**: 7I84 output 2 (sinking), 5 V from a 24 V → 5 V buck converter (see `VISION_HARDWARE.md`)
+
+### Wiring Diagrams
+Where every wire lands on each Mesa card, drawn on the real card layouts from `Mesa7I96S.hal`, with a
+pin-by-pin table and the things to check before powering up. The sources are in `docs/wiring/` (open them in
+a browser); the links below are their published copies, private Claude artifacts: open them signed in to
+the owner's claude.ai account, or share them from each page's Share menu.
+- **[7I96S](https://claude.ai/artifact/QtuukSyugFAVWwX2BSeY3Q)**: Ethernet, 5 V power, step/dir for X, Y, Z and the
+  drawbar, the spindle encoder, and the P1 smart serial breakout
+- **[7I84U](https://claude.ai/artifact/7kCnsSy715uRvjh2P8u7yT)**: field power, home switches, probe, tool setter,
+  E-stop, the drawbar valve and driver, spindle power, mist coolant and the camera laser
+- **[7I83](https://claude.ai/artifact/6iFcG6nCMmkbU8jrhAMgzb)**: power and the spindle drive's ±10 V speed command
+  and enable
 
 ### Pendant Support
 - **Model**: XHC-WHB04B-6 Wireless Pendant
@@ -642,6 +655,8 @@ AICNC/
 ├── fusion_tools.py         # Fusion 360 tool libraries: reading, feed rescaling, tool.tbl links
 ├── milo_vision/            # Camera: calibration, detection, table scans, heights, probe programs
 ├── VISION_HARDWARE.md      # Camera/laser/probe shopping list and mounting design
+├── docs/wiring/            # Wiring diagrams for the 7I96S, 7I84U and 7I83 (HTML, see Wiring Diagrams)
+├── CLAUDE.md               # Notes for Claude: keep the wiring diagrams in step with the HAL
 ├── requirements.txt        # Pinned Python packages for the venv
 ├── libs/cam_ir/            # CAM IR library (git submodule)
 ├── tests/                  # venv/bin/python -m pytest tests
